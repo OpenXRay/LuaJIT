@@ -443,7 +443,6 @@
   } else { \
     CCALL_HANDLE_GPR \
   }
-#endif
 #endif /* LJ_ABI_SOFTFP */
 #endif /* LJ_ARCH_PPC64 */
 
