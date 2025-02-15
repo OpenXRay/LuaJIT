@@ -27,60 +27,37 @@
 #include "lj_strfmt.h"
 
 #include <time.h>
-#if LJ_TARGET_POSIX
-#include <sys/time.h>
-#elif LJ_TARGET_WINDOWS
-#define timercmp(a, b, CMP)                              \
-  (((a)->tv_sec == (b)->tv_sec) ?                        \
-   ((a)->tv_nsec CMP (b)->tv_nsec) :                    \
-   ((a)->tv_sec CMP (b)->tv_sec))
-#define timeradd(a, b, result)                                   \
-  do {                                                                         \
-    (result)->tv_sec = (a)->tv_sec + (b)->tv_sec;         \
-    (result)->tv_nsec = (a)->tv_nsec + (b)->tv_nsec;    \
-    if ((result)->tv_nsec >= 1000000000)                \
-      {                                                 \
-        ++(result)->tv_sec;                             \
-        (result)->tv_nsec -= 1000000000;                \
-      }                                                 \
-  } while (0)
+
+#if LJ_TARGET_WINDOWS
+static inline uint64_t get_query_performance_counter(void)
+{
+  LARGE_INTEGER cnt;
+  QueryPerformanceCounter(&cnt);
+  return cnt.QuadPart;
+}
+#elif LJ_TARGET_POSIX
+static inline uint64_t get_query_performance_counter(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+  return 1000000000ULL * ts.tv_sec + ts.tv_nsec;
+}
 #endif
 
 static void gc_step_timeout(lua_State *L, uint32_t timeout_usec)
 {
-#if LJ_TARGET_POSIX
-  struct timeval tv_timeout;
-  tv_timeout.tv_sec = 0;
-  tv_timeout.tv_usec = timeout_usec;
+  uint64_t timeout = timeout_usec * 1000;
 
-  struct timeval tv_current;
-  gettimeofday(&tv_current, NULL);
+  uint64_t time_current = get_query_performance_counter();
 
-  timeradd(&tv_current, &tv_timeout, &tv_timeout);
-  while (timercmp(&tv_current, &tv_timeout, <)) {
+  timeout += time_current;
+  while (time_current < timeout) {
     if (lj_gc_step(L) > 0) {
       break;
     }
 
-    gettimeofday(&tv_current, NULL);
+    time_current = get_query_performance_counter();
   }
-#elif LJ_TARGET_WINDOWS
-  struct timespec tv_timeout;
-  tv_timeout.tv_sec = 0;
-  tv_timeout.tv_nsec = timeout_usec * 1000;
-
-  struct timespec tv_current;
-  timespec_get(&tv_current, TIME_UTC);
-
-  timeradd(&tv_current, &tv_timeout, &tv_timeout);
-  while (timercmp(&tv_current, &tv_timeout, < )) {
-    if (lj_gc_step(L) > 0) {
-      break;
-    }
-
-    timespec_get(&tv_current, TIME_UTC);
-  }
-#endif
 }
 
 /* -- Common helper functions --------------------------------------------- */
