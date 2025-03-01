@@ -26,7 +26,9 @@
 #include "lj_strscan.h"
 #include "lj_strfmt.h"
 
+#if LJ_TARGET_POSIX
 #include <time.h>
+#endif
 
 #if LJ_TARGET_WINDOWS
 static inline uint64_t get_query_performance_counter(void)
