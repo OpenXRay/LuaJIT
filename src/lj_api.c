@@ -44,8 +44,10 @@ static inline uint64_t get_query_performance_counter(void)
 }
 #endif
 
-static void gc_step_timeout(lua_State *L, uint32_t timeout_usec)
+static int gc_step_timeout(lua_State *L, uint32_t timeout_usec)
 {
+#if LJ_TARGET_WINDOWS || LJ_TARGET_POSIX
+  int res = 0;
   uint64_t timeout = timeout_usec * 1000;
 
   uint64_t time_current = get_query_performance_counter();
@@ -53,11 +55,16 @@ static void gc_step_timeout(lua_State *L, uint32_t timeout_usec)
   timeout += time_current;
   while (time_current < timeout) {
     if (lj_gc_step(L) > 0) {
+      res = 1;
       break;
     }
 
     time_current = get_query_performance_counter();
   }
+  return res;
+#else
+  return -1;
+#endif
 }
 
 /* -- Common helper functions --------------------------------------------- */
@@ -1339,8 +1346,10 @@ LUA_API int lua_gc(lua_State *L, int what, int data)
     break;
   }
   case LUA_GCTIMEOUT: {
-    gc_step_timeout(L, (uint32_t)data);
-    g->gc.threshold = LJ_MAX_MEM;
+    res = gc_step_timeout(L, (uint32_t)data);
+    if (res >= 0) {
+      g->gc.threshold = LJ_MAX_MEM;
+    }
     break;
   }
   case LUA_GCSETPAUSE:
