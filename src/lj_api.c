@@ -31,14 +31,14 @@
 #endif
 
 #if LJ_TARGET_WINDOWS
-static inline uint64_t get_query_performance_counter(void)
+static inline uint64_t get_high_resolution_time(void)
 {
   LARGE_INTEGER cnt;
   QueryPerformanceCounter(&cnt);
   return cnt.QuadPart;
 }
 #elif LJ_TARGET_POSIX
-static inline uint64_t get_query_performance_counter(void)
+static inline uint64_t get_high_resolution_time(void)
 {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
@@ -52,7 +52,7 @@ static int gc_step_timeout(lua_State *L, uint32_t timeout_usec)
   int res = 0;
   uint64_t timeout = timeout_usec * 1000;
 
-  uint64_t time_current = get_query_performance_counter();
+  uint64_t time_current = get_high_resolution_time();
 
   timeout += time_current;
   while (time_current < timeout) {
@@ -61,7 +61,7 @@ static int gc_step_timeout(lua_State *L, uint32_t timeout_usec)
       break;
     }
 
-    time_current = get_query_performance_counter();
+    time_current = get_high_resolution_time();
   }
   return res;
 #else
