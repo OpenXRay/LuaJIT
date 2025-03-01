@@ -1347,13 +1347,12 @@ LUA_API int lua_gc(lua_State *L, int what, int data)
       }
     break;
   }
-  case LUA_GCTIMEOUT: {
+  case LUA_GCTIMEOUT:
     res = gc_step_timeout(L, (uint32_t)data);
     if (res >= 0) {
       g->gc.threshold = LJ_MAX_MEM;
     }
     break;
-  }
   case LUA_GCSETPAUSE:
     res = (int)(g->gc.pause);
     g->gc.pause = (MSize)data;
