@@ -1,6 +1,6 @@
 /*
 ** Bytecode reader.
-** Copyright (C) 2005-2021 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2026 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lj_bcread_c
@@ -53,11 +53,11 @@ static LJ_NOINLINE void bcread_fill(LexState *ls, MSize len, int need)
   do {
     const char *buf;
     size_t sz;
-    char *p = sbufB(&ls->sb);
+    char *p = ls->sb.b;
     MSize n = (MSize)(ls->pe - ls->p);
     if (n) {  /* Copy remainder to buffer. */
       if (sbuflen(&ls->sb)) {  /* Move down in buffer. */
-	lj_assertLS(ls->pe == sbufP(&ls->sb), "bad buffer pointer");
+	lj_assertLS(ls->pe == ls->sb.w, "bad buffer pointer");
 	if (ls->p != p) memmove(p, ls->p, n);
       } else {  /* Copy from buffer provided by reader. */
 	p = lj_buf_need(&ls->sb, len);
@@ -66,7 +66,7 @@ static LJ_NOINLINE void bcread_fill(LexState *ls, MSize len, int need)
       ls->p = p;
       ls->pe = p + n;
     }
-    setsbufP(&ls->sb, p + n);
+    ls->sb.w = p + n;
     buf = ls->rfunc(ls->L, ls->rdata, &sz);  /* Get more data from reader. */
     if (buf == NULL || sz == 0) {  /* EOF? */
       if (need) bcread_error(ls, LJ_ERR_BCBAD);
@@ -77,8 +77,8 @@ static LJ_NOINLINE void bcread_fill(LexState *ls, MSize len, int need)
     if (n) {  /* Append to buffer. */
       n += (MSize)sz;
       p = lj_buf_need(&ls->sb, n < len ? len : n);
-      memcpy(sbufP(&ls->sb), buf, sz);
-      setsbufP(&ls->sb, p + n);
+      memcpy(ls->sb.w, buf, sz);
+      ls->sb.w = p + n;
       ls->p = p;
       ls->pe = p + n;
     } else {  /* Return buffer provided by reader. */
@@ -179,7 +179,7 @@ static const void *bcread_varinfo(GCproto *pt)
 }
 
 /* Read a single constant key/value of a template table. */
-static void bcread_ktabk(LexState *ls, TValue *o)
+static void bcread_ktabk(LexState *ls, TValue *o, GCtab *t)
 {
   MSize tp = bcread_uleb128(ls);
   if (tp >= BCDUMP_KTAB_STR) {
@@ -191,6 +191,8 @@ static void bcread_ktabk(LexState *ls, TValue *o)
   } else if (tp == BCDUMP_KTAB_NUM) {
     o->u32.lo = bcread_uleb128(ls);
     o->u32.hi = bcread_uleb128(ls);
+  } else if (t && tp == BCDUMP_KTAB_NIL) { /* Restore nil value marker. */
+    settabV(ls->L, o, t);
   } else {
     lj_assertLS(tp <= BCDUMP_KTAB_TRUE, "bad constant type %d", tp);
     setpriV(o, ~tp);
@@ -207,15 +209,15 @@ static GCtab *bcread_ktab(LexState *ls)
     MSize i;
     TValue *o = tvref(t->array);
     for (i = 0; i < narray; i++, o++)
-      bcread_ktabk(ls, o);
+      bcread_ktabk(ls, o, NULL);
   }
   if (nhash) {  /* Read hash entries. */
     MSize i;
     for (i = 0; i < nhash; i++) {
       TValue key;
-      bcread_ktabk(ls, &key);
+      bcread_ktabk(ls, &key, NULL);
       lj_assertLS(!tvisnil(&key), "nil key");
-      bcread_ktabk(ls, lj_tab_set(ls->L, t, &key));
+      bcread_ktabk(ls, lj_tab_set(ls->L, t, &key), t);
     }
   }
   return t;
@@ -281,8 +283,11 @@ static void bcread_knum(LexState *ls, GCproto *pt, MSize sizekn)
 static void bcread_bytecode(LexState *ls, GCproto *pt, MSize sizebc)
 {
   BCIns *bc = proto_bc(pt);
-  bc[0] = BCINS_AD((pt->flags & PROTO_VARARG) ? BC_FUNCV : BC_FUNCF,
-		   pt->framesize, 0);
+  BCIns op;
+  if (ls->fr2 != LJ_FR2) op = BC_NOT;  /* Mark non-native prototype. */
+  else if ((pt->flags & PROTO_VARARG)) op = BC_FUNCV;
+  else op = BC_FUNCF;
+  bc[0] = BCINS_AD(op, pt->framesize, 0);
   bcread_block(ls, bc+1, (sizebc-1)*(MSize)sizeof(BCIns));
   /* Swap bytecode instructions if the endianess differs. */
   if (bcread_swap(ls)) {
@@ -395,21 +400,17 @@ static int bcread_header(LexState *ls)
       bcread_byte(ls) != BCDUMP_VERSION) return 0;
   bcread_flags(ls) = flags = bcread_uleb128(ls);
   if ((flags & ~(BCDUMP_F_KNOWN)) != 0) return 0;
-  if ((flags & BCDUMP_F_FR2) != LJ_FR2*BCDUMP_F_FR2) return 0;
+  if ((flags & BCDUMP_F_FR2) != (uint32_t)ls->fr2*BCDUMP_F_FR2) return 0;
   if ((flags & BCDUMP_F_FFI)) {
 #if LJ_HASFFI
     lua_State *L = ls->L;
-    if (!ctype_ctsG(G(L))) {
-      ptrdiff_t oldtop = savestack(L, L->top);
-      luaopen_ffi(L);  /* Load FFI library on-demand. */
-      L->top = restorestack(L, oldtop);
-    }
+    ctype_loadffi(L);
 #else
     return 0;
 #endif
   }
   if ((flags & BCDUMP_F_STRIP)) {
-    ls->chunkname = lj_str_newz(ls->L, ls->chunkarg);
+    ls->chunkname = lj_str_newz(ls->L, *ls->chunkarg == BCDUMP_HEAD1 ? "=?" : ls->chunkarg);
   } else {
     MSize len = bcread_uleb128(ls);
     bcread_need(ls, len);

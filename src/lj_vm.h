@@ -1,6 +1,6 @@
 /*
 ** Assembler VM interface definitions.
-** Copyright (C) 2005-2021 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2026 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #ifndef _LJ_VM_H
@@ -26,6 +26,9 @@ LJ_ASMF void lj_vm_unwind_ff_eh(void);
 #if LJ_TARGET_X86ORX64
 LJ_ASMF void lj_vm_unwind_rethrow(void);
 #endif
+#if LJ_TARGET_MIPS
+LJ_ASMF void lj_vm_unwind_stub(void);
+#endif
 
 /* Miscellaneous functions. */
 #if LJ_TARGET_X86ORX64
@@ -34,13 +37,19 @@ LJ_ASMF int lj_vm_cpuid(uint32_t f, uint32_t res[4]);
 #if LJ_TARGET_PPC
 void lj_vm_cachesync(void *start, void *end);
 #endif
-LJ_ASMF double lj_vm_foldarith(double x, double y, int op);
+LJ_ASMF LJ_CONSTF double lj_vm_foldarith(double x, double y, int op);
 #if LJ_HASJIT
-LJ_ASMF double lj_vm_foldfpm(double x, int op);
+LJ_ASMF LJ_CONSTF double lj_vm_foldfpm(double x, int op);
 #endif
-#if !LJ_ARCH_HASFPU
-/* Declared in lj_obj.h: LJ_ASMF int32_t lj_vm_tobit(double x); */
+#if LJ_SOFTFP && LJ_TARGET_MIPS64
+LJ_ASMF int32_t lj_vm_tointg(double x);
 #endif
+/* Declared in lj_obj.h:
+** LJ_ASMF LJ_CONSTF int64_t lj_vm_num2int_check(double x);
+** LJ_ASMF LJ_CONSTF int64_t lj_vm_num2i64(double x);
+** LJ_ASMF LJ_CONSTF uint64_t lj_vm_num2u64(double x);
+** LJ_ASMF LJ_CONSTF int32_t lj_vm_tobit(double x);
+*/
 
 /* Dispatch targets for recording and hooks. */
 LJ_ASMF void lj_vm_record(void);
@@ -48,25 +57,26 @@ LJ_ASMF void lj_vm_inshook(void);
 LJ_ASMF void lj_vm_rethook(void);
 LJ_ASMF void lj_vm_callhook(void);
 LJ_ASMF void lj_vm_profhook(void);
+LJ_ASMF void lj_vm_IITERN(void);
 
 /* Trace exit handling. */
-LJ_ASMF void lj_vm_exit_handler(void);
-LJ_ASMF void lj_vm_exit_interp(void);
+LJ_ASMF char lj_vm_exit_handler[];
+LJ_ASMF char lj_vm_exit_interp[];
 
 /* Internal math helper functions. */
 #if LJ_TARGET_PPC || LJ_TARGET_ARM64 || (LJ_TARGET_MIPS && LJ_ABI_SOFTFP)
 #define lj_vm_floor	floor
 #define lj_vm_ceil	ceil
 #else
-LJ_ASMF double lj_vm_floor(double);
-LJ_ASMF double lj_vm_ceil(double);
+LJ_ASMF LJ_CONSTF double lj_vm_floor(double);
+LJ_ASMF LJ_CONSTF double lj_vm_ceil(double);
 #if LJ_TARGET_ARM
 LJ_ASMF double lj_vm_floor_sf(double);
 LJ_ASMF double lj_vm_ceil_sf(double);
 #endif
 #endif
 #ifdef LUAJIT_NO_LOG2
-LJ_ASMF double lj_vm_log2(double);
+LJ_ASMF LJ_CONSTF double lj_vm_log2(double);
 #else
 #define lj_vm_log2	log2
 #endif
@@ -79,15 +89,11 @@ LJ_ASMF int32_t LJ_FASTCALL lj_vm_modi(int32_t, int32_t);
 LJ_ASMF void lj_vm_floor_sse(void);
 LJ_ASMF void lj_vm_ceil_sse(void);
 LJ_ASMF void lj_vm_trunc_sse(void);
-LJ_ASMF void lj_vm_powi_sse(void);
-#define lj_vm_powi	NULL
-#else
-LJ_ASMF double lj_vm_powi(double, int32_t);
 #endif
 #if LJ_TARGET_PPC || LJ_TARGET_ARM64
 #define lj_vm_trunc	trunc
 #else
-LJ_ASMF double lj_vm_trunc(double);
+LJ_ASMF LJ_CONSTF double lj_vm_trunc(double);
 #if LJ_TARGET_ARM
 LJ_ASMF double lj_vm_trunc_sf(double);
 #endif
@@ -95,6 +101,7 @@ LJ_ASMF double lj_vm_trunc_sf(double);
 #if LJ_HASFFI
 LJ_ASMF int lj_vm_errno(void);
 #endif
+LJ_ASMF TValue *lj_vm_next(GCtab *t, uint32_t idx);
 #endif
 
 /* Continuations for metamethods. */
@@ -110,6 +117,6 @@ LJ_ASMF void lj_cont_stitch(void);  /* Trace stitching. */
 LJ_ASMF char lj_vm_asm_begin[];
 
 /* Bytecode offsets are relative to lj_vm_asm_begin. */
-#define makeasmfunc(ofs)	((ASMFunction)(lj_vm_asm_begin + (ofs)))
+#define makeasmfunc(ofs) lj_ptr_sign((ASMFunction)(lj_vm_asm_begin + (ofs)), 0)
 
 #endif

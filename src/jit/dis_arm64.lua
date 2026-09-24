@@ -1,7 +1,7 @@
 ----------------------------------------------------------------------------
 -- LuaJIT ARM64 disassembler module.
 --
--- Copyright (C) 2005-2021 Mike Pall. All rights reserved.
+-- Copyright (C) 2005-2026 Mike Pall. All rights reserved.
 -- Released under the MIT license. See Copyright Notice in luajit.h
 --
 -- Contributed by Djordje Kovacevic and Stefan Pejic from RT-RK.com.
@@ -18,9 +18,7 @@ local sub, byte, format = string.sub, string.byte, string.format
 local match, gmatch, gsub = string.match, string.gmatch, string.gsub
 local concat = table.concat
 local bit = require("bit")
-local band, bor, bxor, tohex = bit.band, bit.bor, bit.bxor, bit.tohex
-local lshift, rshift, arshift = bit.lshift, bit.rshift, bit.arshift
-local ror = bit.ror
+local ror, tohex = bit.ror, bit.tohex
 
 ------------------------------------------------------------------------------
 -- Opcode maps
@@ -107,24 +105,20 @@ local map_logsr = { -- Logical, shifted register.
     [0] = {
       shift = 29, mask = 3,
       [0] = {
-	shift = 21, mask = 7,
-	[0] = "andDNMSg", "bicDNMSg", "andDNMSg", "bicDNMSg",
-	"andDNMSg", "bicDNMSg", "andDNMg", "bicDNMg"
+	shift = 21, mask = 1,
+	[0] = "andDNMSg", "bicDNMSg"
       },
       {
-	shift = 21, mask = 7,
-	[0] ="orr|movDN0MSg", "orn|mvnDN0MSg", "orr|movDN0MSg", "orn|mvnDN0MSg",
-	     "orr|movDN0MSg", "orn|mvnDN0MSg", "orr|movDN0Mg", "orn|mvnDN0Mg"
+	shift = 21, mask = 1,
+	[0] = "orr|movDN0MSg", "orn|mvnDN0MSg"
       },
       {
-	shift = 21, mask = 7,
-	[0] = "eorDNMSg", "eonDNMSg", "eorDNMSg", "eonDNMSg",
-	"eorDNMSg", "eonDNMSg", "eorDNMg", "eonDNMg"
+	shift = 21, mask = 1,
+	[0] = "eorDNMSg", "eonDNMSg"
       },
       {
-	shift = 21, mask = 7,
-	[0] = "ands|tstD0NMSg", "bicsDNMSg", "ands|tstD0NMSg", "bicsDNMSg",
-	"ands|tstD0NMSg", "bicsDNMSg", "ands|tstD0NMg", "bicsDNMg"
+	shift = 21, mask = 1,
+	[0] = "ands|tstD0NMSg", "bicsDNMSg"
       }
     },
     false -- unallocated
@@ -132,24 +126,20 @@ local map_logsr = { -- Logical, shifted register.
   {
     shift = 29, mask = 3,
     [0] = {
-      shift = 21, mask = 7,
-      [0] = "andDNMSg", "bicDNMSg", "andDNMSg", "bicDNMSg",
-      "andDNMSg", "bicDNMSg", "andDNMg", "bicDNMg"
+      shift = 21, mask = 1,
+      [0] = "andDNMSg", "bicDNMSg"
     },
     {
-      shift = 21, mask = 7,
-      [0] = "orr|movDN0MSg", "orn|mvnDN0MSg", "orr|movDN0MSg", "orn|mvnDN0MSg",
-      "orr|movDN0MSg", "orn|mvnDN0MSg", "orr|movDN0Mg", "orn|mvnDN0Mg"
+      shift = 21, mask = 1,
+      [0] = "orr|movDN0MSg", "orn|mvnDN0MSg"
     },
     {
-      shift = 21, mask = 7,
-      [0] = "eorDNMSg", "eonDNMSg", "eorDNMSg", "eonDNMSg",
-      "eorDNMSg", "eonDNMSg", "eorDNMg", "eonDNMg"
+      shift = 21, mask = 1,
+      [0] = "eorDNMSg", "eonDNMSg"
     },
     {
-      shift = 21, mask = 7,
-      [0] = "ands|tstD0NMSg", "bicsDNMSg", "ands|tstD0NMSg", "bicsDNMSg",
-      "ands|tstD0NMSg", "bicsDNMSg", "ands|tstD0NMg", "bicsDNMg"
+      shift = 21, mask = 1,
+      [0] = "ands|tstD0NMSg", "bicsDNMSg"
     }
   }
 }
@@ -493,15 +483,15 @@ local map_ls = { -- Loads and stores.
       shift = 30, mask = 3,
       [0] = {
 	shift = 22, mask = 3,
-	[0] = "strbDwzU", "ldrbDwzU"
+	[0] = "strbDwzU", "ldrbDwzU", "ldrsbDwzU", "ldrsbDxzU"
       },
       {
 	shift = 22, mask = 3,
-	[0] = "strhDwzU", "ldrhDwzU"
+	[0] = "strhDwzU", "ldrhDwzU", "ldrshDwzU", "ldrshDxzU"
       },
       {
 	shift = 22, mask = 3,
-	[0] = "strDwzU", "ldrDwzU"
+	[0] = "strDwzU", "ldrDwzU", "ldrswDxzU"
       },
       {
 	shift = 22, mask = 3,
@@ -666,6 +656,10 @@ local map_datafp = { -- Data processing, SIMD and FP.
 	}
       }
     }
+  },
+  { -- 010
+    shift = 0, mask = 0x81f8fc00,
+    [0x100e400] = "moviDdG"
   }
 }
 
@@ -699,7 +693,10 @@ local map_br = { -- Branches, exception generating and system instructions.
     },
     { -- System instructions.
       shift = 0, mask = 0x3fffff,
-      [0x03201f] = "nop"
+      [0x03201f] = "nop",
+      [0x03245f] = "bti c",
+      [0x03249f] = "bti j",
+      [0x0324df] = "bti jc",
     },
     { -- Unconditional branch, register.
       shift = 0, mask = 0xfffc1f,
@@ -735,7 +732,7 @@ local map_cond = {
   "hi", "ls", "ge", "lt", "gt", "le", "al",
 }
 
-local map_shift = { [0] = "lsl", "lsr", "asr", }
+local map_shift = { [0] = "lsl", "lsr", "asr", "ror"}
 
 local map_extend = {
   [0] = "uxtb", "uxth", "uxtw", "uxtx", "sxtb", "sxth", "sxtw", "sxtx",
@@ -783,35 +780,35 @@ end
 local imm13_rep = { 0x55555555, 0x11111111, 0x01010101, 0x00010001, 0x00000001 }
 
 local function decode_imm13(op)
-  local imms = band(rshift(op, 10), 63)
-  local immr = band(rshift(op, 16), 63)
-  if band(op, 0x00400000) == 0 then
+  local imms = (op >> 10) & 63
+  local immr = (op >> 16) & 63
+  if op & 0x00400000 == 0 then
     local len = 5
     if imms >= 56 then
       if imms >= 60 then len = 1 else len = 2 end
     elseif imms >= 48 then len = 3 elseif imms >= 32 then len = 4 end
-    local l = lshift(1, len)-1
-    local s = band(imms, l)
-    local r = band(immr, l)
-    local imm = ror(rshift(-1, 31-s), r)
-    if len ~= 5 then imm = band(imm, lshift(1, l)-1) + rshift(imm, 31-l) end
-    imm = imm * imm13_rep[len]
+    local l = (1 << len) - 1
+    local s = imms & l
+    local r = immr & l
+    local imm = ror(-1 >> 31-s, r)
+    if len != 5 then imm = (imm & ((1 << l) - 1)) | (imm >> 31-l) end
+    imm *= imm13_rep[len]
     local ix = fmt_hex32(imm)
-    if rshift(op, 31) ~= 0 then
+    if op >> 31 != 0 then
       return ix..tohex(imm)
     else
       return ix
     end
   else
     local lo, hi = -1, 0
-    if imms < 32 then lo = rshift(-1, 31-imms) else hi = rshift(-1, 63-imms) end
-    if immr ~= 0 then
+    if imms < 32 then lo = -1 >> 31-imms else hi = -1 >> 63-imms end
+    if immr != 0 then
       lo, hi = ror(lo, immr), ror(hi, immr)
-      local x = immr == 32 and 0 or band(bxor(lo, hi), lshift(-1, 32-immr))
-      lo, hi = bxor(lo, x), bxor(hi, x)
+      local x = immr == 32 ? 0 : (lo ~ hi) & (-1 << 32-immr)
+      lo, hi = lo ~ x, hi ~ x
       if immr >= 32 then lo, hi = hi, lo end
     end
-    if hi ~= 0 then
+    if hi != 0 then
       return fmt_hex32(hi)..tohex(lo)
     else
       return fmt_hex32(lo)
@@ -821,23 +818,35 @@ end
 
 local function parse_immpc(op, name)
   if name == "b" or name == "bl" then
-    return arshift(lshift(op, 6), 4)
+    return (op << 6) ~>> 4
   elseif name == "adr" or name == "adrp" then
-    local immlo = band(rshift(op, 29), 3)
-    local immhi = lshift(arshift(lshift(op, 8), 13), 2)
-    return bor(immhi, immlo)
+    return (((op << 8) ~>> 13) << 2) | ((op >> 29) & 3)
   elseif name == "tbz" or name == "tbnz" then
-    return lshift(arshift(lshift(op, 13), 18), 2)
+    return ((op << 13) ~>> 18) << 2
   else
-    return lshift(arshift(lshift(op, 8), 13), 2)
+    return ((op << 8) ~>> 13) << 2
   end
 end
 
 local function parse_fpimm8(op)
-  local sign = band(op, 0x100000) == 0 and 1 or -1
-  local exp = bxor(rshift(arshift(lshift(op, 12), 5), 24), 0x80) - 131
-  local frac = 16+band(rshift(op, 13), 15)
+  local sign = op & 0x100000 == 0 ? 1 : -1
+  local exp = ((((op << 12) ~>> 5) >> 24) ~ 0x80) - 131
+  local frac = 16 + ((op >> 13) & 15)
   return sign * frac * 2^exp
+end
+
+local function decode_fpmovi(op)
+  local lo = op >> 5
+  local hi = op >> 9
+  lo = ((lo & 1) * 0xff) | ((lo & 2) * 0x7f80) |
+       ((lo & 4) * 0x3fc000) | ((lo & 8) * 0x1fe00000)
+  hi = ((hi & 1) * 0xff) | ((hi & 0x80) * 0x1fe) |
+       ((hi & 0x100) * 0xff00) | ((hi & 0x200) * 0x7f8000)
+  if hi != 0 then
+    return fmt_hex32(hi)..tohex(lo)
+  else
+    return fmt_hex32(lo)
+  end
 end
 
 local function prefer_bfx(sf, uns, imms, immr)
@@ -848,7 +857,7 @@ local function prefer_bfx(sf, uns, imms, immr)
     if sf == 0 and (imms == 7 or imms == 15) then
       return false
     end
-    if sf ~= 0 and uns == 0 and (imms == 7 or imms == 15 or imms == 31) then
+    if sf != 0 and uns == 0 and (imms == 7 or imms == 15 or imms == 31) then
       return false
     end
   end
@@ -859,7 +868,7 @@ end
 local function disass_ins(ctx)
   local pos = ctx.pos
   local b0, b1, b2, b3 = byte(ctx.code, pos+1, pos+4)
-  local op = bor(lshift(b3, 24), lshift(b2, 16), lshift(b1, 8), b0)
+  local op = (b3 << 24) | (b2 << 16) | (b1 << 8) | b0
   local operands = {}
   local suffix = ""
   local last, name, pat
@@ -868,26 +877,26 @@ local function disass_ins(ctx)
   ctx.rel = nil
   last = nil
   local opat
-  opat = map_init[band(rshift(op, 25), 15)]
-  while type(opat) ~= "string" do
+  opat = map_init[(op >> 25) & 15]
+  while type(opat) != "string" do
     if not opat then return unknown(ctx) end
-    opat = opat[band(rshift(op, opat.shift), opat.mask)] or opat._
+    opat = opat[(op >> opat.shift) & opat.mask] or opat._
   end
   name, pat = match(opat, "^([a-z0-9]*)(.*)")
   local altname, pat2 = match(pat, "|([a-z0-9_.|]*)(.*)")
   if altname then pat = pat2 end
   if sub(pat, 1, 1) == "." then
     local s2, p2 = match(pat, "^([a-z0-9.]*)(.*)")
-    suffix = suffix..s2
+    suffix ..= s2
     pat = p2
   end
 
   local rt = match(pat, "[gf]")
   if rt then
     if rt == "g" then
-      map_reg = band(op, 0x80000000) ~= 0 and map_regs.x or map_regs.w
+      map_reg = map_regs[op & 0x80000000 != 0 ? "x" : "w"]
     else
-      map_reg = band(op, 0x400000) ~= 0 and map_regs.d or map_regs.s
+      map_reg = map_regs[op & 0x400000 != 0 ? "d" : "s"]
     end
   end
 
@@ -896,41 +905,41 @@ local function disass_ins(ctx)
   for p in gmatch(pat, ".") do
     local x = nil
     if p == "D" then
-      local regnum = band(op, 31)
-      x = rt and map_reg[regnum] or match_reg(p, pat, regnum)
+      local regnum = op & 31
+      x = rt ? map_reg[regnum] : match_reg(p, pat, regnum)
     elseif p == "N" then
-      local regnum = band(rshift(op, 5), 31)
-      x = rt and map_reg[regnum] or match_reg(p, pat, regnum)
+      local regnum = (op >> 5) & 31
+      x = rt ? map_reg[regnum] : match_reg(p, pat, regnum)
     elseif p == "M" then
-      local regnum = band(rshift(op, 16), 31)
-      x = rt and map_reg[regnum] or match_reg(p, pat, regnum)
+      local regnum = (op >> 16) & 31
+      x = rt ? map_reg[regnum] : match_reg(p, pat, regnum)
     elseif p == "A" then
-      local regnum = band(rshift(op, 10), 31)
-      x = rt and map_reg[regnum] or match_reg(p, pat, regnum)
+      local regnum = (op >> 10) & 31
+      x = rt ? map_reg[regnum] : match_reg(p, pat, regnum)
     elseif p == "B" then
       local addr = ctx.addr + pos + parse_immpc(op, name)
       ctx.rel = addr
-      x = "0x"..tohex(addr)
+      x = format("0x%08x", addr)
     elseif p == "T" then
-      x = bor(band(rshift(op, 26), 32), band(rshift(op, 19), 31))
+      x = ((op >> 26) & 32) | ((op >> 19) & 31)
     elseif p == "V" then
-      x = band(op, 15)
+      x = op & 15
     elseif p == "C" then
-      x = map_cond[band(rshift(op, 12), 15)]
+      x = map_cond[(op >> 12) & 15]
     elseif p == "c" then
-      local rn = band(rshift(op, 5), 31)
-      local rm = band(rshift(op, 16), 31)
-      local cond = band(rshift(op, 12), 15)
-      local invc = bxor(cond, 1)
+      local rn = (op >> 5) & 31
+      local rm = (op >> 16) & 31
+      local cond = (op >> 12) & 15
+      local invc = cond ~ 1
       x = map_cond[cond]
-      if altname and cond ~= 14 and cond ~= 15 then
+      if altname and cond != 14 and cond != 15 then
 	local a1, a2 = match(altname, "([^|]*)|(.*)")
 	if rn == rm then
 	  local n = #operands
 	  operands[n] = nil
 	  x = map_cond[invc]
-	  if rn ~= 31 then
-	    if a1 then name = a1 else name = altname end
+	  if rn != 31 then
+	    name = a1 ?? altname
 	  else
 	    operands[n-1] = nil
 	    name = a2
@@ -938,66 +947,59 @@ local function disass_ins(ctx)
 	end
       end
     elseif p == "W" then
-      x = band(rshift(op, 5), 0xffff)
+      x = (op >> 5) & 0xffff
     elseif p == "Y" then
-      x = band(rshift(op, 5), 0xffff)
-      local hw = band(rshift(op, 21), 3)
-      if altname and (hw == 0 or x ~= 0) then
+      x = (op >> 5) & 0xffff
+      local hw = (op >> 21) & 3
+      if altname and (hw == 0 or x != 0) then
 	name = altname
       end
     elseif p == "L" then
-      local rn = map_regs.x[band(rshift(op, 5), 31)]
-      local imm9 = arshift(lshift(op, 11), 23)
-      if band(op, 0x800) ~= 0 then
+      local rn = map_regs.x[(op >> 5) & 31]
+      local imm9 = (op << 11) ~>> 23
+      if op & 0x800 != 0 then
 	x = "["..rn..", #"..imm9.."]!"
       else
 	x = "["..rn.."], #"..imm9
       end
     elseif p == "U" then
-      local rn = map_regs.x[band(rshift(op, 5), 31)]
-      local sz = band(rshift(op, 30), 3)
-      local imm12 = lshift(arshift(lshift(op, 10), 20), sz)
-      if imm12 ~= 0 then
+      local rn = map_regs.x[(op >> 5) & 31]
+      local sz = (op >> 30) & 3
+      local imm12 = ((op << 10) >> 20) << sz
+      if imm12 != 0 then
 	x = "["..rn..", #"..imm12.."]"
       else
 	x = "["..rn.."]"
       end
     elseif p == "K" then
-      local rn = map_regs.x[band(rshift(op, 5), 31)]
-      local imm9 = arshift(lshift(op, 11), 23)
-      if imm9 ~= 0 then
+      local rn = map_regs.x[(op >> 5) & 31]
+      local imm9 = (op << 11) ~>> 23
+      if imm9 != 0 then
 	x = "["..rn..", #"..imm9.."]"
       else
 	x = "["..rn.."]"
       end
     elseif p == "O" then
-      local rn, rm = map_regs.x[band(rshift(op, 5), 31)]
-      local m = band(rshift(op, 13), 1)
-      if m == 0 then
-	rm = map_regs.w[band(rshift(op, 16), 31)]
-      else
-	rm = map_regs.x[band(rshift(op, 16), 31)]
-      end
+      local rn = map_regs.x[(op >> 5) & 31]
+      local rm = map_regs[op & (1 << 13) == 0 ? "w" : "x"][(op >> 16) & 31]
       x = "["..rn..", "..rm
-      local opt = band(rshift(op, 13), 7)
-      local s = band(rshift(op, 12), 1)
-      local sz = band(rshift(op, 30), 3)
-      -- extension to be applied
+      local opt = (op >> 13) & 7
+      local s = (op >> 12) & 1
+      local sz = (op >> 30) & 3
       if opt == 3 then
-       if s == 0 then x = x.."]"
+       if s == 0 then x ..= "]"
        else x = x..", lsl #"..sz.."]" end
       elseif opt == 2 or opt == 6 or opt == 7 then
 	if s == 0 then x = x..", "..map_extend[opt].."]"
 	else x = x..", "..map_extend[opt].." #"..sz.."]" end
       else
-	x = x.."]"
+	x ..= "]"
       end
     elseif p == "P" then
-      local opcv, sh = rshift(op, 26), 2
-      if opcv >= 0x2a then sh = 4 elseif opcv >= 0x1b then sh = 3 end
-      local imm7 = lshift(arshift(lshift(op, 10), 25), sh)
-      local rn = map_regs.x[band(rshift(op, 5), 31)]
-      local ind = band(rshift(op, 23), 3)
+      local sh = 2 + (op >> (31 - ((op >> 26) & 1)))
+      local imm7 = ((op << 10) ~>> 25) << sh
+      local rn = map_regs.x[(op >> 5) & 31]
+      local ind = (op >> 23) & 3
       if ind == 1 then
 	x = "["..rn.."], #"..imm7
       elseif ind == 2 then
@@ -1010,9 +1012,9 @@ local function disass_ins(ctx)
 	x = "["..rn..", #"..imm7.."]!"
       end
     elseif p == "I" then
-      local shf = band(rshift(op, 22), 3)
-      local imm12 = band(rshift(op, 10), 0x0fff)
-      local rn, rd = band(rshift(op, 5), 31), band(op, 31)
+      local shf = (op >> 22) & 3
+      local imm12 = (op >> 10) & 0x0fff
+      local rn, rd = (op >> 5) & 31, op & 31
       if altname == "mov" and shf == 0 and imm12 == 0 and (rn == 31 or rd == 31) then
 	name = altname
 	x = nil
@@ -1024,22 +1026,22 @@ local function disass_ins(ctx)
     elseif p == "i" then
       x = "#0x"..decode_imm13(op)
     elseif p == "1" then
-      immr = band(rshift(op, 16), 63)
+      immr = (op >> 16) & 63
       x = immr
     elseif p == "2" then
-      x = band(rshift(op, 10), 63)
+      x = (op >> 10) & 63
       if altname then
 	local a1, a2, a3, a4, a5, a6 =
 	  match(altname, "([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|(.*)")
-	local sf = band(rshift(op, 26), 32)
-	local uns = band(rshift(op, 30), 1)
+	local sf = (op >> 26) & 32
+	local uns = (op >> 30) & 1
 	if prefer_bfx(sf, uns, x, immr) then
 	  name = a2
 	  x = x - immr + 1
 	elseif immr == 0 and x == 7 then
 	  local n = #operands
 	  operands[n] = nil
-	  if sf ~= 0 then
+	  if sf != 0 then
 	    operands[n-1] = gsub(operands[n-1], "x", "w")
 	  end
 	  last = operands[n-1]
@@ -1048,7 +1050,7 @@ local function disass_ins(ctx)
 	elseif immr == 0 and x == 15 then
 	  local n = #operands
 	  operands[n] = nil
-	  if sf ~= 0 then
+	  if sf != 0 then
 	    operands[n-1] = gsub(operands[n-1], "x", "w")
 	  end
 	  last = operands[n-1]
@@ -1059,7 +1061,7 @@ local function disass_ins(ctx)
 	    name = a4
 	    local n = #operands
 	    operands[n] = nil
-	    if sf ~= 0 then
+	    if sf != 0 then
 	      operands[n-1] = gsub(operands[n-1], "x", "w")
 	    end
 	    last = operands[n-1]
@@ -1067,7 +1069,7 @@ local function disass_ins(ctx)
 	    name = a3
 	  end
 	  x = nil
-	elseif band(x, 31) ~= 31 and immr == x+1 and name == "ubfm" then
+	elseif x & 31 != 31 and immr == x+1 and name == "ubfm" then
 	  name = a4
 	  last = "#"..(sf+32 - immr)
 	  operands[#operands] = last
@@ -1076,28 +1078,28 @@ local function disass_ins(ctx)
 	  name = a1
 	  last = "#"..(sf+32 - immr)
 	  operands[#operands] = last
-	  x = x + 1
+	  x += 1
 	end
       end
     elseif p == "3" then
-      x = band(rshift(op, 10), 63)
+      x = (op >> 10) & 63
       if altname then
 	local a1, a2 = match(altname, "([^|]*)|(.*)")
 	if x < immr then
 	  name = a1
-	  local sf = band(rshift(op, 26), 32)
+	  local sf = (op >> 26) & 32
 	  last = "#"..(sf+32 - immr)
 	  operands[#operands] = last
-	  x = x + 1
-	elseif x >= immr then
+	  x += 1
+	else
 	  name = a2
 	  x = x - immr + 1
 	end
       end
     elseif p == "4" then
-      x = band(rshift(op, 10), 63)
-      local rn = band(rshift(op, 5), 31)
-      local rm = band(rshift(op, 16), 31)
+      x = (op >> 10) & 63
+      local rn = (op >> 5) & 31
+      local rm = (op >> 16) & 31
       if altname and rn == rm then
 	local n = #operands
 	operands[n] = nil
@@ -1105,30 +1107,30 @@ local function disass_ins(ctx)
 	name = altname
       end
     elseif p == "5" then
-      x = band(rshift(op, 16), 31)
+      x = (op >> 16) & 31
     elseif p == "S" then
-      x = band(rshift(op, 10), 63)
+      x = (op >> 10) & 63
       if x == 0 then x = nil
-      else x = map_shift[band(rshift(op, 22), 3)].." #"..x end
+      else x = map_shift[(op >> 22) & 3].." #"..x end
     elseif p == "X" then
-      local opt = band(rshift(op, 13), 7)
+      local opt = (op >> 13) & 7
       -- Width specifier <R>.
-      if opt ~= 3 and opt ~= 7 then
-	last = map_regs.w[band(rshift(op, 16), 31)]
+      if opt != 3 and opt != 7 then
+	last = map_regs.w[(op >> 16) & 31]
 	operands[#operands] = last
       end
-      x = band(rshift(op, 10), 7)
+      x = (op >> 10) & 7
       -- Extension.
-      if opt == 2 + band(rshift(op, 31), 1) and
-	 band(rshift(op, second0 and 5 or 0), 31) == 31 then
+      if opt == 2 + ((op >> 31) & 1) and
+	 (op >> (second0 ? 5 : 0)) & 31 == 31 then
 	if x == 0 then x = nil
 	else x = "lsl #"..x end
       else
-	if x == 0 then x = map_extend[band(rshift(op, 13), 7)]
-	else x = map_extend[band(rshift(op, 13), 7)].." #"..x end
+	if x == 0 then x = map_extend[(op >> 13) & 7]
+	else x = map_extend[(op >> 13) & 7].." #"..x end
       end
     elseif p == "R" then
-      x = band(rshift(op,21), 3)
+      x = (op >> 21) & 3
       if x == 0 then x = nil
       else x = "lsl #"..x*16 end
     elseif p == "z" then
@@ -1140,6 +1142,8 @@ local function disass_ins(ctx)
       x = 0
     elseif p == "F" then
       x = parse_fpimm8(op)
+    elseif p == "G" then
+      x = "#0x"..decode_fpmovi(op)
     elseif p == "g" or p == "f" or p == "x" or p == "w" or
 	   p == "d" or p == "s" then
       -- These are handled in D/N/M/A.
@@ -1160,6 +1164,9 @@ local function disass_ins(ctx)
 	end
       end
       second0 = true
+    elseif p == " " then
+      operands[#operands+1] = pat:match(" (.*)")
+      break
     else
       assert(false)
     end

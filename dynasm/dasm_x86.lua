@@ -1,7 +1,7 @@
 ------------------------------------------------------------------------------
 -- DynASM x86/x64 module.
 --
--- Copyright (C) 2005-2021 Mike Pall. All rights reserved.
+-- Copyright (C) 2005-2026 Mike Pall. All rights reserved.
 -- See dynasm.lua for full copyright notice.
 ------------------------------------------------------------------------------
 
@@ -11,9 +11,9 @@ local x64 = x64
 local _info = {
   arch =	x64 and "x64" or "x86",
   description =	"DynASM x86/x64 module",
-  version =	"1.4.0",
-  vernum =	 10400,
-  release =	"2015-10-18",
+  version =	"1.5.0",
+  vernum =	 10500,
+  release =	"2021-05-02",
   author =	"Mike Pall",
   license =	"MIT",
 }
@@ -484,6 +484,22 @@ local function wputdarg(n)
   end
 end
 
+-- Put signed or unsigned qword or arg.
+local function wputqarg(n)
+  local tn = type(n)
+  if tn == "number" then -- This is only used for numbers from -2^31..2^32-1.
+    wputb(band(n, 255))
+    wputb(band(shr(n, 8), 255))
+    wputb(band(shr(n, 16), 255))
+    wputb(shr(n, 24))
+    local sign = n < 0 and 255 or 0
+    wputb(sign); wputb(sign); wputb(sign); wputb(sign)
+  else
+    waction("IMM_D", format("(unsigned int)(%s)", n))
+    waction("IMM_D", format("(unsigned int)((unsigned long long)(%s)>>32)", n))
+  end
+end
+
 -- Put operand-size dependent number or arg (defaults to dword).
 local function wputszarg(sz, n)
   if not sz or sz == "d" or sz == "q" then wputdarg(n)
@@ -611,7 +627,11 @@ local function wputmrmsib(t, imark, s, vsreg, psz, sk)
 	werror("NYI: rip-relative displacement followed by immediate")
       end
       -- The previous byte in the action buffer cannot be 0xe9 or 0x80-0x8f.
-      wputlabel("REL_", disp[1], 2)
+      if disp[2] == "iPJ" then
+	waction("REL_A", disp[1])
+      else
+	wputlabel("REL_", disp[1], 2)
+      end
     else
       wputdarg(disp)
     end
@@ -663,10 +683,16 @@ local function opmodestr(op, args)
 end
 
 -- Convert number to valid integer or nil.
-local function toint(expr)
+local function toint(expr, isqword)
   local n = tonumber(expr)
   if n then
-    if n % 1 ~= 0 or n < -2147483648 or n > 4294967295 then
+    if n % 1 ~= 0 then
+      werror("not an integer number `"..expr.."'")
+    elseif isqword then
+      if n < -2147483648 or n > 2147483647 then
+	n = nil -- Handle it as an expression to avoid precision loss.
+      end
+    elseif n < -2147483648 or n > 4294967295 then
       werror("bad integer number `"..expr.."'")
     end
     return n
@@ -722,9 +748,9 @@ local function dispexpr(expr)
     return imm*map_opsizenum[ops]
   end
   local mode, iexpr = immexpr(dispt)
-  if mode == "iJ" then
+  if mode == "iJ" or mode == "iPJ" then
     if c == "-" then werror("cannot invert label reference") end
-    return { iexpr }
+    return { iexpr, mode }
   end
   return expr -- Need to return original signed expression.
 end
@@ -749,7 +775,7 @@ local function rtexpr(expr)
 end
 
 -- Parse operand and return { mode, opsize, reg, xreg, xsc, disp, imm }.
-local function parseoperand(param)
+local function parseoperand(param, isqword)
   local t = {}
 
   local expr = param
@@ -810,7 +836,7 @@ local function parseoperand(param)
       if t.disp then break end
 
       -- [reg+xreg...]
-      local xreg, tailx = match(tailr, "^+%s*([@%w_:]+)%s*(.*)$")
+      local xreg, tailx = match(tailr, "^%+%s*([@%w_:]+)%s*(.*)$")
       xreg, t.xreg, tp = rtexpr(xreg)
       if not t.xreg then
 	-- [reg+-expr]
@@ -837,7 +863,7 @@ local function parseoperand(param)
       t.disp = dispexpr(tailx)
     else
       -- imm or opsize*imm
-      local imm = toint(expr)
+      local imm = toint(expr, isqword)
       if not imm and sub(expr, 1, 1) == "*" and t.opsize then
 	imm = toint(sub(expr, 2))
 	if imm then
@@ -1125,6 +1151,8 @@ local map_op = {
   rep_0 =	"F3",
   repe_0 =	"F3",
   repz_0 =	"F3",
+  endbr32_0 =	"F30F1EFB",
+  endbr64_0 =	"F30F1EFA",
   -- F4: *hlt
   cmc_0 =	"F5",
   -- F6: test... mb,i; div... mb
@@ -1282,7 +1310,7 @@ local map_op = {
   mfence_0 =	"0FAEF0",
   movapd_2 =	"rmo:660F28rM|mro:660F29Rm",
   movaps_2 =	"rmo:0F28rM|mro:0F29Rm",
-  movd_2 =	"rm/od:660F6ErM|rm/oq:660F6ErXM|mr/do:660F7ERm|mr/qo:",
+  movd_2 =	"rm/od:660F6ErM|mr/do:660F7ERm",
   movdqa_2 =	"rmo:660F6FrM|mro:660F7FRm",
   movdqu_2 =	"rmo:F30F6FrM|mro:F30F7FRm",
   movhlps_2 =	"rro:0F12rM",
@@ -1297,7 +1325,7 @@ local map_op = {
   movnti_2 =	"xrqd:0FC3Rm",
   movntpd_2 =	"xro:660F2BRm",
   movntps_2 =	"xro:0F2BRm",
-  movq_2 =	"rro:F30F7ErM|rx/oq:|xr/qo:n660FD6Rm",
+  movq_2 =	x64 and "rro:F30F7ErM|rx/oq:|xr/qo:n660FD6Rm|rm/oq:660F6ErXM|mr/qo:660F7ERm" or "rro:F30F7ErM|rx/oq:|xr/qo:n660FD6Rm",
   movsd_2 =	"rro:F20F10rM|rx/oq:|xr/qo:nF20F11Rm",
   movss_2 =	"rro:F30F10rM|rx/od:|xr/do:F30F11Rm",
   movupd_2 =	"rmo:660F10rM|mro:660F11Rm",
@@ -1381,7 +1409,7 @@ local map_op = {
   dppd_3 =	"rmio:660F3A41rMU",
   dpps_3 =	"rmio:660F3A40rMU",
   extractps_3 =	"mri/do:660F3A17RmU|rri/qo:660F3A17RXmU",
-  insertps_3 =	"rrio:660F3A41rMU|rxi/od:",
+  insertps_3 =	"rrio:660F3A21rMU|rxi/od:",
   movntdqa_2 =	"rxo:660F382ArM",
   mpsadbw_3 =	"rmio:660F3A42rMU",
   packusdw_2 =	"rmo:660F382BrM",
@@ -1501,8 +1529,8 @@ local map_op = {
   vmaskmovpd_3 = "rrxoy:660F38V2DrM|xrroy:660F38V2FRm",
   vmovapd_2 =	"rmoy:660Fu28rM|mroy:660Fu29Rm",
   vmovaps_2 =	"rmoy:0Fu28rM|mroy:0Fu29Rm",
-  vmovd_2 =	"rm/od:660Fu6ErM|rm/oq:660FuX6ErM|mr/do:660Fu7ERm|mr/qo:",
-  vmovq_2 =	"rro:F30Fu7ErM|rx/oq:|xr/qo:660FuD6Rm",
+  vmovd_2 =	"rm/od:660Fu6ErM|mr/do:660Fu7ERm",
+  vmovq_2 =	x64 and "rro:F30Fu7ErM|rx/oq:|xr/qo:660FuD6Rm|rm/oq:660FuX6ErM|mr/qo:660Fu7ERm" or "rro:F30Fu7ErM|rx/oq:|xr/qo:660FuD6Rm",
   vmovddup_2 =	"rmy:F20Fu12rM|rro:|rx/oq:",
   vmovhlps_3 =	"rrro:0FV12rM",
   vmovhpd_2 =	"xr/qo:660Fu17Rm",
@@ -1952,7 +1980,7 @@ local function dopattern(pat, args, sz, op, needrex)
 	local a = args[narg]
 	narg = narg + 1
 	local mode, imm = a.mode, a.imm
-	if mode == "iJ" and not match("iIJ", c) then
+	if mode == "iJ" and not match(x64 and "J" or "iIJ", c) then
 	  werror("bad operand size for label")
 	end
 	if c == "S" then
@@ -2144,14 +2172,16 @@ end
 local function op_data(params)
   if not params then return "imm..." end
   local sz = sub(params.op, 2, 2)
-  if sz == "a" then sz = addrsize end
+  if sz == "l" then sz = "d" elseif sz == "a" then sz = addrsize end
   for _,p in ipairs(params) do
-    local a = parseoperand(p)
+    local a = parseoperand(p, sz == "q")
     if sub(a.mode, 1, 1) ~= "i" or (a.opsize and a.opsize ~= sz) then
       werror("bad mode or size in `"..p.."'")
     end
     if a.mode == "iJ" then
       wputlabel("IMM_", a.imm, 1)
+    elseif sz == "q" then
+      wputqarg(a.imm)
     else
       wputszarg(sz, a.imm)
     end
@@ -2163,7 +2193,11 @@ map_op[".byte_*"] = op_data
 map_op[".sbyte_*"] = op_data
 map_op[".word_*"] = op_data
 map_op[".dword_*"] = op_data
+map_op[".qword_*"] = op_data
 map_op[".aword_*"] = op_data
+map_op[".long_*"] = op_data
+map_op[".quad_*"] = op_data
+map_op[".addr_*"] = op_data
 
 ------------------------------------------------------------------------------
 

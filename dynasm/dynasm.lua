@@ -2,7 +2,7 @@
 -- DynASM. A dynamic assembler for code generation engines.
 -- Originally designed and implemented for LuaJIT.
 --
--- Copyright (C) 2005-2021 Mike Pall. All rights reserved.
+-- Copyright (C) 2005-2026 Mike Pall. All rights reserved.
 -- See below for full copyright notice.
 ------------------------------------------------------------------------------
 
@@ -10,14 +10,14 @@
 local _info = {
   name =	"DynASM",
   description =	"A dynamic assembler for code generation engines",
-  version =	"1.4.0",
-  vernum =	 10400,
-  release =	"2015-10-18",
+  version =	"1.5.0",
+  vernum =	 10500,
+  release =	"2021-05-02",
   author =	"Mike Pall",
   url =		"https://luajit.org/dynasm.html",
   license =	"MIT",
   copyright =	[[
-Copyright (C) 2005-2021 Mike Pall. All rights reserved.
+Copyright (C) 2005-2026 Mike Pall. All rights reserved.
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
@@ -75,7 +75,7 @@ local function wline(line, needindent)
   g_synclineno = g_synclineno + 1
 end
 
--- Write assembler line as a comment, if requestd.
+-- Write assembler line as a comment, if requested.
 local function wcomment(aline)
   if g_opt.comment then
     wline(g_opt.comment..aline..g_opt.endcomment, true)

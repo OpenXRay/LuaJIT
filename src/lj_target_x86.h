@@ -1,6 +1,6 @@
 /*
 ** Definitions for x86 and x64 CPUs.
-** Copyright (C) 2005-2021 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2026 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #ifndef _LJ_TARGET_X86_H
@@ -38,10 +38,9 @@ enum {
   RID_RET = RID_EAX,
 #if LJ_64
   RID_FPRET = RID_XMM0,
-#else
+#endif
   RID_RETLO = RID_EAX,
   RID_RETHI = RID_EDX,
-#endif
 
   /* These definitions must match with the *.dasc file(s): */
   RID_BASE = RID_EDX,		/* Interpreter BASE. */
@@ -117,8 +116,8 @@ enum {
 
 #if LJ_64
 /* Prefer the low 8 regs of each type to reduce REX prefixes. */
-#undef rset_picktop
-#define rset_picktop(rs)	(lj_fls(lj_bswap(rs)) ^ 0x18)
+#undef rset_picktop_
+#define rset_picktop_(rs)	(lj_fls(lj_bswap(rs)) ^ 0x18)
 #endif
 
 /* -- Spill slots --------------------------------------------------------- */
@@ -164,6 +163,8 @@ typedef struct {
 /* Limited by the range of a short fwd jump (127): (2+2)*(32-1)-2 = 122. */
 #define EXITSTUB_SPACING	(2+2)
 #define EXITSTUBS_PER_GROUP	32
+
+#define EXITTRACE_VMSTATE	1	/* g->vmstate has traceno on exit. */
 
 /* -- x86 ModRM operand encoding ------------------------------------------ */
 
@@ -241,6 +242,9 @@ typedef enum {
   XV_SHLX =	XV_660f38(f7),
   XV_SHRX =	XV_f20f38(f7),
 
+  /* Special NOP instructions. */
+  XI_ENDBR64 =	0xfa1e0ff3,
+
   /* Variable-length opcodes. XO_* prefix. */
   XO_OR =	XO_(0b),
   XO_MOV =	XO_(8b),
@@ -310,6 +314,7 @@ typedef enum {
   XO_FSTPq =	XO_(dd), XOg_FSTPq = 3,
   XO_FISTPq =	XO_(df), XOg_FISTPq = 7,
   XO_FISTTPq =	XO_(dd), XOg_FISTTPq = 1,
+  XO_FADDd =	XO_(d8), XOg_FADDd = 0,
   XO_FADDq =	XO_(dc), XOg_FADDq = 0,
   XO_FLDCW =	XO_(d9), XOg_FLDCW = 5,
   XO_FNSTCW =	XO_(d9), XOg_FNSTCW = 7

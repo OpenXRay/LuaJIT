@@ -1,6 +1,6 @@
 /*
 ** C type conversions.
-** Copyright (C) 2005-2021 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2026 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #include "lj_obj.h"
@@ -8,6 +8,7 @@
 #if LJ_HASFFI
 
 #include "lj_err.h"
+#include "lj_buf.h"
 #include "lj_tab.h"
 #include "lj_ctype.h"
 #include "lj_cdata.h"
@@ -196,18 +197,16 @@ void lj_cconv_ct_ct(CTState *cts, CType *d, CType *s,
     else goto err_conv;  /* NYI: long double. */
     /* Then convert double to integer. */
     /* The conversion must exactly match the semantics of JIT-compiled code! */
-    if (dsize < 4 || (dsize == 4 && !(dinfo & CTF_UNSIGNED))) {
-      int32_t i = (int32_t)n;
+    if (dsize < 8) {
+      int64_t i = lj_num2i64(n);  /* Always convert via int64_t. */
       if (dsize == 4) *(int32_t *)dp = i;
       else if (dsize == 2) *(int16_t *)dp = (int16_t)i;
       else *(int8_t *)dp = (int8_t)i;
-    } else if (dsize == 4) {
-      *(uint32_t *)dp = (uint32_t)n;
     } else if (dsize == 8) {
-      if (!(dinfo & CTF_UNSIGNED))
-	*(int64_t *)dp = (int64_t)n;
-      else
+      if ((dinfo & CTF_UNSIGNED))
 	*(uint64_t *)dp = lj_num2u64(n);
+      else
+	*(int64_t *)dp = lj_num2i64(n);
     } else {
       goto err_conv;  /* NYI: conversion to >64 bit integers. */
     }
@@ -568,7 +567,9 @@ void lj_cconv_ct_tv(CTState *cts, CType *d,
     }
     s = ctype_raw(cts, sid);
     if (ctype_isfunc(s->info)) {
+      CTypeID did = ctype_typeid(cts, d);
       sid = lj_ctype_intern(cts, CTINFO(CT_PTR, CTALIGN_PTR|sid), CTSIZE_PTR);
+      d = ctype_get(cts, did);  /* cts->tab may have been reallocated. */
     } else {
       if (ctype_isenum(s->info)) s = ctype_child(cts, s);
       goto doconv;
@@ -619,6 +620,8 @@ void lj_cconv_ct_tv(CTState *cts, CType *d,
     tmpptr = uddata(ud);
     if (ud->udtype == UDTYPE_IO_FILE)
       tmpptr = *(void **)tmpptr;
+    else if (ud->udtype == UDTYPE_BUFFER)
+      tmpptr = ((SBufExt *)tmpptr)->r;
   } else if (tvislightud(o)) {
     tmpptr = lightudV(cts->g, o);
   } else if (tvisfunc(o)) {

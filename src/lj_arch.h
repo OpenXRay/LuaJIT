@@ -1,6 +1,6 @@
 /*
 ** Target architecture selection.
-** Copyright (C) 2005-2021 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2026 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #ifndef _LJ_ARCH_H
@@ -59,7 +59,7 @@
 #define LUAJIT_TARGET	LUAJIT_ARCH_X64
 #elif defined(__arm__) || defined(__arm) || defined(__ARM__) || defined(__ARM)
 #define LUAJIT_TARGET	LUAJIT_ARCH_ARM
-#elif defined(__aarch64__)
+#elif defined(__aarch64__) || defined(_M_ARM64)
 #define LUAJIT_TARGET	LUAJIT_ARCH_ARM64
 #elif defined(__ppc__) || defined(__ppc) || defined(__PPC__) || defined(__PPC) || defined(__powerpc__) || defined(__powerpc) || defined(__POWERPC__) || defined(__POWERPC) || defined(_M_PPC)
 #define LUAJIT_TARGET	LUAJIT_ARCH_PPC
@@ -70,7 +70,7 @@
 #elif defined(__e2k__)
 #define LUAJIT_TARGET LUAJIT_ARCH_E2K
 #else
-#error "No support for this architecture (yet)"
+#error "Architecture not supported (in this version), see: https://luajit.org/status.html#architectures"
 #endif
 
 #endif
@@ -87,7 +87,7 @@
 #define LUAJIT_OS	LUAJIT_OS_OSX
 #elif (defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || \
        defined(__NetBSD__) || defined(__OpenBSD__) || \
-       defined(__DragonFly__)) && !defined(__ORBIS__)
+       defined(__DragonFly__)) && !defined(__ORBIS__) && !defined(__PROSPERO__)
 #define LUAJIT_OS	LUAJIT_OS_BSD
 #elif (defined(__sun__) && defined(__svr4__))
 #define LJ_TARGET_SOLARIS	1
@@ -96,6 +96,12 @@
 #define LUAJIT_OS	LUAJIT_OS_POSIX
 #elif defined(__CYGWIN__)
 #define LJ_TARGET_CYGWIN	1
+#define LUAJIT_OS	LUAJIT_OS_POSIX
+#elif defined(__QNX__)
+#define LJ_TARGET_QNX		1
+#define LUAJIT_OS	LUAJIT_OS_POSIX
+#elif defined(__GNU__)
+#define LJ_TARGET_HURD		1
 #define LUAJIT_OS	LUAJIT_OS_POSIX
 #else
 #define LUAJIT_OS	LUAJIT_OS_OTHER
@@ -125,7 +131,7 @@
 #define LJ_TARGET_POSIX		(LUAJIT_OS > LUAJIT_OS_WINDOWS)
 #define LJ_TARGET_DLOPEN	LJ_TARGET_POSIX
 
-#if TARGET_OS_IPHONE
+#if (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE) || LUAJIT_TARGET_IPHONE
 #define LJ_TARGET_IOS		1
 #else
 #define LJ_TARGET_IOS		0
@@ -138,6 +144,13 @@
 
 #ifdef __ORBIS__
 #define LJ_TARGET_PS4		1
+#define LJ_TARGET_CONSOLE	1
+#undef NULL
+#define NULL ((void*)0)
+#endif
+
+#ifdef __PROSPERO__
+#define LJ_TARGET_PS5		1
 #define LJ_TARGET_CONSOLE	1
 #undef NULL
 #define NULL ((void*)0)
@@ -159,6 +172,13 @@
 #define LJ_TARGET_GC64		1
 #endif
 
+#ifdef __NX__
+#define LJ_TARGET_NX		1
+#define LJ_TARGET_CONSOLE	1
+#undef NULL
+#define NULL ((void*)0)
+#endif
+
 #ifdef _UWP
 #define LJ_TARGET_UWP		1
 #if LUAJIT_TARGET == LUAJIT_ARCH_X64
@@ -174,14 +194,10 @@
 #define LJ_ARCH_NAME		"x86"
 #define LJ_ARCH_BITS		32
 #define LJ_ARCH_ENDIAN		LUAJIT_LE
-#if LJ_TARGET_WINDOWS || LJ_TARGET_CYGWIN
-#define LJ_ABI_WIN		1
-#else
-#define LJ_ABI_WIN		0
-#endif
 #define LJ_TARGET_X86		1
 #define LJ_TARGET_X86ORX64	1
 #define LJ_TARGET_EHRETREG	0
+#define LJ_TARGET_EHRAREG	8
 #define LJ_TARGET_MASKSHIFT	1
 #define LJ_TARGET_MASKROT	1
 #define LJ_TARGET_UNALIGNED	1
@@ -192,14 +208,10 @@
 #define LJ_ARCH_NAME		"x64"
 #define LJ_ARCH_BITS		64
 #define LJ_ARCH_ENDIAN		LUAJIT_LE
-#if LJ_TARGET_WINDOWS || LJ_TARGET_CYGWIN
-#define LJ_ABI_WIN		1
-#else
-#define LJ_ABI_WIN		0
-#endif
 #define LJ_TARGET_X64		1
 #define LJ_TARGET_X86ORX64	1
 #define LJ_TARGET_EHRETREG	0
+#define LJ_TARGET_EHRAREG	16
 #define LJ_TARGET_JUMPRANGE	31	/* +-2^31 = +-2GB */
 #define LJ_TARGET_MASKSHIFT	1
 #define LJ_TARGET_MASKROT	1
@@ -207,6 +219,31 @@
 #define LJ_ARCH_NUMMODE		LJ_NUMMODE_SINGLE_DUAL
 #ifndef LUAJIT_DISABLE_GC64
 #define LJ_TARGET_GC64		1
+#elif LJ_TARGET_OSX
+#error "macOS requires GC64 -- don't disable it"
+#endif
+
+#if !defined(LJ_ABI_BRANCH_TRACK) && (__CET__ & 1) && \
+    LJ_TARGET_GC64 && defined(LUAJIT_ENABLE_CET_BR)
+/*
+** Control-Flow Enforcement Technique (CET) indirect branch tracking (IBT).
+** This is not enabled by default because it causes a notable slowdown of
+** the interpreter on all x64 CPUs, whether they have CET enabled or not.
+** If your toolchain enables -fcf-protection=branch by default, you need
+** to build with: make amalg XCFLAGS=-DLUAJIT_ENABLE_CET_BR
+*/
+#define LJ_ABI_BRANCH_TRACK	1
+#endif
+
+#if !defined(LJ_ABI_SHADOW_STACK) && (__CET__ & 2)
+/*
+** Control-Flow Enforcement Technique (CET) shadow stack (CET-SS).
+** It has no code overhead and doesn't cause any slowdowns when unused.
+** It can also be unconditionally enabled since all code already follows
+** a strict CALL to RET correspondence for performance reasons (all modern
+** CPUs use a (non-enforcing) shadow stack for return branch prediction).
+*/
+#define LJ_ABI_SHADOW_STACK	1
 #endif
 
 #elif LUAJIT_TARGET == LUAJIT_ARCH_ARM
@@ -223,13 +260,14 @@
 #define LJ_ABI_EABI		1
 #define LJ_TARGET_ARM		1
 #define LJ_TARGET_EHRETREG	0
+#define LJ_TARGET_EHRAREG	14
 #define LJ_TARGET_JUMPRANGE	25	/* +-2^25 = +-32MB */
 #define LJ_TARGET_MASKSHIFT	0
 #define LJ_TARGET_MASKROT	1
 #define LJ_TARGET_UNIFYROT	2	/* Want only IR_BROR. */
 #define LJ_ARCH_NUMMODE		LJ_NUMMODE_DUAL
 
-#if __ARM_ARCH == 8 || __ARM_ARCH_8__ || __ARM_ARCH_8A__
+#if __ARM_ARCH >= 8 || __ARM_ARCH_8__ || __ARM_ARCH_8A__
 #define LJ_ARCH_VERSION		80
 #elif __ARM_ARCH == 7 || __ARM_ARCH_7__ || __ARM_ARCH_7A__ || __ARM_ARCH_7R__ || __ARM_ARCH_7S__ || __ARM_ARCH_7VE__
 #define LJ_ARCH_VERSION		70
@@ -251,14 +289,28 @@
 #define LJ_ARCH_NAME		"arm64"
 #define LJ_ARCH_ENDIAN		LUAJIT_LE
 #endif
+#if !defined(LJ_ABI_PAUTH) && defined(__arm64e__)
+#define LJ_ABI_PAUTH		1
+#endif
+#if !defined(LJ_ABI_BRANCH_TRACK) && (__ARM_FEATURE_BTI_DEFAULT & 1) && \
+    defined(LUAJIT_ENABLE_CET_BR)
+/* See comments about LUAJIT_ENABLE_CET_BR above. */
+#define LJ_ABI_BRANCH_TRACK	1
+#endif
 #define LJ_TARGET_ARM64		1
 #define LJ_TARGET_EHRETREG	0
+#define LJ_TARGET_EHRAREG	30
 #define LJ_TARGET_JUMPRANGE	27	/* +-2^27 = +-128MB */
 #define LJ_TARGET_MASKSHIFT	1
 #define LJ_TARGET_MASKROT	1
 #define LJ_TARGET_UNIFYROT	2	/* Want only IR_BROR. */
 #define LJ_TARGET_GC64		1
+#define LJ_PAGESIZE		16384
 #define LJ_ARCH_NUMMODE		LJ_NUMMODE_DUAL
+
+#if __ARM_FEATURE_UNALIGNED
+#define LJ_TARGET_UNALIGNED	1
+#endif
 
 #define LJ_ARCH_VERSION		80
 
@@ -308,6 +360,7 @@
 
 #define LJ_TARGET_PPC		1
 #define LJ_TARGET_EHRETREG	3
+#define LJ_TARGET_EHRAREG	65
 #define LJ_TARGET_JUMPRANGE	25	/* +-2^25 = +-32MB */
 #define LJ_TARGET_MASKSHIFT	0
 #define LJ_TARGET_MASKROT	1
@@ -318,6 +371,7 @@
 #define LJ_ARCH_NOFFI		1
 #elif LJ_ARCH_BITS == 64
 #error "No support for PPC64"
+#undef LJ_TARGET_PPC
 #endif
 
 #if _ARCH_PWR9
@@ -415,7 +469,8 @@
 #endif
 #define LJ_TARGET_MIPS		1
 #define LJ_TARGET_EHRETREG	4
-#define LJ_TARGET_JUMPRANGE	27	/* 2*2^27 = 256MB-aligned region */
+#define LJ_TARGET_EHRAREG	31
+#define LJ_TARGET_JUMPRANGE	28	/* 2^28 = 256MB-aligned region */
 #define LJ_TARGET_MASKSHIFT	1
 #define LJ_TARGET_MASKROT	1
 #define LJ_TARGET_UNIFYROT	2	/* Want only IR_BROR. */
@@ -471,8 +526,14 @@
 #endif
 #endif
 #elif !LJ_TARGET_PS3
+#if __clang__
+#if ((__clang_major__ < 3) || ((__clang_major__ == 3) && __clang_minor__ < 5))
+#error "Need at least Clang 3.5 or newer"
+#endif
+#else
 #if (__GNUC__ < 4) || ((__GNUC__ == 4) && __GNUC_MINOR__ < 3)
 #error "Need at least GCC 4.3 or newer"
+#endif
 #endif
 #endif
 #endif
@@ -486,39 +547,48 @@
 #elif LJ_TARGET_ARM
 #if defined(__ARMEB__)
 #error "No support for big-endian ARM"
+#undef LJ_TARGET_ARM
 #endif
 #if __ARM_ARCH_6M__ || __ARM_ARCH_7M__ || __ARM_ARCH_7EM__
 #error "No support for Cortex-M CPUs"
+#undef LJ_TARGET_ARM
 #endif
 #if !(__ARM_EABI__ || LJ_TARGET_IOS)
 #error "Only ARM EABI or iOS 3.0+ ABI is supported"
+#undef LJ_TARGET_ARM
 #endif
 #elif LJ_TARGET_ARM64
 #if defined(_ILP32)
 #error "No support for ILP32 model on ARM64"
+#undef LJ_TARGET_ARM64
 #endif
 #elif LJ_TARGET_PPC
 #if defined(_LITTLE_ENDIAN) && (!defined(_BYTE_ORDER) || (_BYTE_ORDER == _LITTLE_ENDIAN))
 #error "No support for little-endian PPC32"
+#undef LJ_TARGET_PPC
 #endif
 #if LJ_ARCH_PPC64 && LJ_ARCH_ENDIAN == LUAJIT_BE
 #error "No support for big-endian PPC64"
 #endif
 #if defined(__NO_FPRS__) && !defined(_SOFT_FLOAT)
-#error "No support for PPC/e500 anymore (use LuaJIT 2.0)"
+#error "No support for PPC/e500, use LuaJIT 2.0"
+#undef LJ_TARGET_PPC
 #endif
 #elif LJ_TARGET_MIPS32
 #if !((defined(_MIPS_SIM_ABI32) && _MIPS_SIM == _MIPS_SIM_ABI32) || (defined(_ABIO32) && _MIPS_SIM == _ABIO32))
 #error "Only o32 ABI supported for MIPS32"
+#undef LJ_TARGET_MIPS
 #endif
 #if LJ_TARGET_MIPSR6
 /* Not that useful, since most available r6 CPUs are 64 bit. */
 #error "No support for MIPS32R6"
+#undef LJ_TARGET_MIPS
 #endif
 #elif LJ_TARGET_MIPS64
 #if !((defined(_MIPS_SIM_ABI64) && _MIPS_SIM == _MIPS_SIM_ABI64) || (defined(_ABI64) && _MIPS_SIM == _ABI64))
 /* MIPS32ON64 aka n32 ABI support might be desirable, but difficult. */
 #error "Only n64 ABI supported for MIPS64"
+#undef LJ_TARGET_MIPS
 #endif
 #endif
 #endif
@@ -579,6 +649,13 @@
 #define LJ_HASFFI		1
 #endif
 
+/* Disable or enable the string buffer extension. */
+#if defined(LUAJIT_DISABLE_BUFFER)
+#define LJ_HASBUFFER		0
+#else
+#define LJ_HASBUFFER		1
+#endif
+
 #if defined(LUAJIT_DISABLE_PROFILE)
 #define LJ_HASPROFILE		0
 #elif LJ_TARGET_POSIX
@@ -602,6 +679,10 @@
 #endif
 #define LJ_SOFTFP		(!LJ_ARCH_HASFPU)
 #define LJ_SOFTFP32		(LJ_SOFTFP && LJ_32)
+
+#ifndef LJ_ABI_PAUTH
+#define LJ_ABI_PAUTH		0
+#endif
 
 #if LJ_ARCH_ENDIAN == LUAJIT_BE
 #define LJ_LE			0
@@ -639,13 +720,10 @@
 #define LJ_NO_SYSTEM		1
 #endif
 
-#if !defined(LUAJIT_NO_UNWIND) && __GNU_COMPACT_EH__
-/* NYI: no support for compact unwind specification, yet. */
-#define LUAJIT_NO_UNWIND	1
-#endif
-
-#if defined(LUAJIT_NO_UNWIND) || defined(__symbian__) || LJ_TARGET_IOS || LJ_TARGET_PS3 || LJ_TARGET_PS4
-#define LJ_NO_UNWIND		1
+#if LJ_TARGET_WINDOWS || LJ_TARGET_CYGWIN
+#define LJ_ABI_WIN		1
+#else
+#define LJ_ABI_WIN		0
 #endif
 
 #if LJ_TARGET_WINDOWS
@@ -658,6 +736,22 @@ extern void *LJ_WIN_LOADLIBA(const char *path);
 #define LJ_WIN_VPROTECT	VirtualProtect
 #define LJ_WIN_LOADLIBA(path)	LoadLibraryExA((path), NULL, 0)
 #endif
+#endif
+
+#if defined(LUAJIT_NO_UNWIND) || __GNU_COMPACT_EH__ || defined(__symbian__) || LJ_TARGET_IOS || LJ_TARGET_PS3 || LJ_TARGET_PS4 || LJ_TARGET_PS5
+#define LJ_NO_UNWIND		1
+#endif
+
+#if !LJ_NO_UNWIND && !defined(LUAJIT_UNWIND_INTERNAL) && (LJ_ABI_WIN || ((LJ_TARGET_E2K || defined(LUAJIT_UNWIND_EXTERNAL)) && (defined(__GNUC__) || defined(__clang__))))
+#define LJ_UNWIND_EXT		1
+#else
+#define LJ_UNWIND_EXT		0
+#endif
+
+#if LJ_UNWIND_EXT && LJ_HASJIT && !LJ_TARGET_ARM && !(LJ_ABI_WIN && LJ_TARGET_X86)
+#define LJ_UNWIND_JIT		1
+#else
+#define LJ_UNWIND_JIT		0
 #endif
 
 /* Compatibility with Lua 5.1 vs. 5.2. */

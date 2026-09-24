@@ -1,6 +1,6 @@
 /*
 ** SSA IR (Intermediate Representation) emitter.
-** Copyright (C) 2005-2021 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2026 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lj_ir_c
@@ -30,6 +30,7 @@
 #endif
 #include "lj_vm.h"
 #include "lj_strscan.h"
+#include "lj_serialize.h"
 #include "lj_strfmt.h"
 #include "lj_prng.h"
 
@@ -147,7 +148,7 @@ TRef lj_ir_call(jit_State *J, IRCallID id, ...)
 }
 
 /* Load field of type t from GG_State + offset. Must be 32 bit aligned. */
-LJ_FUNC TRef lj_ir_ggfload(jit_State *J, IRType t, uintptr_t ofs)
+TRef lj_ir_ggfload(jit_State *J, IRType t, uintptr_t ofs)
 {
   lj_assertJ((ofs & 3) == 0, "unaligned GG_State field offset");
   ofs >>= 2;
@@ -247,28 +248,15 @@ TRef lj_ir_kint64(jit_State *J, uint64_t u64)
   return lj_ir_k64(J, IR_KINT64, u64);
 }
 
-/* Check whether a number is int and return it. -0 is NOT considered an int. */
-static int numistrueint(lua_Number n, int32_t *kp)
-{
-  int32_t k = lj_num2int(n);
-  if (n == (lua_Number)k) {
-    if (kp) *kp = k;
-    if (k == 0) {  /* Special check for -0. */
-      TValue tv;
-      setnumV(&tv, n);
-      if (tv.u32.hi != 0)
-	return 0;
-    }
-    return 1;
-  }
-  return 0;
-}
-
 /* Intern number as int32_t constant if possible, otherwise as FP constant. */
 TRef lj_ir_knumint(jit_State *J, lua_Number n)
 {
+  int64_t i64;
   int32_t k;
-  if (numistrueint(n, &k))
+  TValue tv;
+  setnumV(&tv, n);
+  /* -0 is NOT considered an int. */
+  if (lj_num2int_check(n, i64, k) && !tvismzero(&tv))
     return lj_ir_kint(J, k);
   else
     return lj_ir_knum(J, n);

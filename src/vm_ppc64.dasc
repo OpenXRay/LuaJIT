@@ -2367,14 +2367,13 @@ static void build_subroutines(BuildCtx *ctx)
   |   cmpdi cr1, CARG3, 0
   |   std TOCREG, 24(sp)
   |  mr TMP2, sp
-  |   addic. CARG2, CARG2, -1
+  |   addic. CARG2, CARG2, -8
   |  stdu sp, -CFRAME_SPACE(sp)
   |   crnot 4*cr1+eq, 4*cr1+eq		// For vararg calls.
   |  std r14, -8(TMP2)
   |  std CCSTATE, -16(TMP2)
   |  mr r14, TMP2
   |  la TMP1, CCSTATE->stack
-  |   sldi CARG2, CARG2, 3
   |   blty >2
   |  la TMP2, 96(sp)			// stack params after regs
   |1:  // Copy stack slots

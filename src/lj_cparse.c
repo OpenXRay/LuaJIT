@@ -1,6 +1,6 @@
 /*
 ** C declaration parser.
-** Copyright (C) 2005-2021 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2026 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #include "lj_obj.h"
@@ -133,9 +133,9 @@ LJ_NORET static void cp_errmsg(CPState *cp, CPToken tok, ErrMsg em, ...)
     tokstr = NULL;
   } else if (tok == CTOK_IDENT || tok == CTOK_INTEGER || tok == CTOK_STRING ||
 	     tok >= CTOK_FIRSTDECL) {
-    if (sbufP(&cp->sb) == sbufB(&cp->sb)) cp_save(cp, '$');
+    if (cp->sb.w == cp->sb.b) cp_save(cp, '$');
     cp_save(cp, '\0');
-    tokstr = sbufB(&cp->sb);
+    tokstr = cp->sb.b;
   } else {
     tokstr = cp_tok2str(cp, tok);
   }
@@ -175,7 +175,7 @@ static CPToken cp_number(CPState *cp)
   TValue o;
   do { cp_save(cp, cp->c); } while (lj_char_isident(cp_get(cp)));
   cp_save(cp, '\0');
-  fmt = lj_strscan_scan((const uint8_t *)sbufB(&cp->sb), sbuflen(&cp->sb)-1,
+  fmt = lj_strscan_scan((const uint8_t *)(cp->sb.b), sbuflen(&cp->sb)-1,
 			&o, STRSCAN_OPT_C);
   if (fmt == STRSCAN_INT) cp->val.id = CTID_INT32;
   else if (fmt == STRSCAN_U32) cp->val.id = CTID_UINT32;
@@ -279,7 +279,7 @@ static CPToken cp_string(CPState *cp)
     return CTOK_STRING;
   } else {
     if (sbuflen(&cp->sb) != 1) cp_err_token(cp, '\'');
-    cp->val.i32 = (int32_t)(char)*sbufB(&cp->sb);
+    cp->val.i32 = (int32_t)(char)*cp->sb.b;
     cp->val.id = CTID_INT32;
     return CTOK_INTEGER;
   }
@@ -468,7 +468,7 @@ static void cp_expr_sizeof(CPState *cp, CPValue *k, int wantsz)
   } else {
     cp_expr_unary(cp, k);
   }
-  info = lj_ctype_info(cp->cts, k->id, &sz);
+  info = lj_ctype_info_raw(cp->cts, k->id, &sz);
   if (wantsz) {
     if (sz != CTSIZE_INVALID)
       k->u32 = sz;
@@ -488,7 +488,7 @@ static void cp_expr_prefix(CPState *cp, CPValue *k)
   } else if (cp_opt(cp, '+')) {
     cp_expr_unary(cp, k);  /* Nothing to do (well, integer promotion). */
   } else if (cp_opt(cp, '-')) {
-    cp_expr_unary(cp, k); k->i32 = -k->i32;
+    cp_expr_unary(cp, k); k->i32 = (int32_t)(~(uint32_t)k->i32+1);
   } else if (cp_opt(cp, '~')) {
     cp_expr_unary(cp, k); k->i32 = ~k->i32;
   } else if (cp_opt(cp, '!')) {
@@ -1309,14 +1309,16 @@ static void cp_struct_layout(CPState *cp, CTypeID sid, CTInfo sattr)
 	align = ctype_align(attr);
       if (cp->packstack[cp->curpack] < align)
 	align = cp->packstack[cp->curpack];
-      if (align > maxalign) maxalign = align;
+      bsz = ctype_bitcsz(ct->info);  /* Bitfield size (temp.). */
+      if (align > maxalign && bsz) maxalign = align;
       amask = (8u << align) - 1;
 
-      bsz = ctype_bitcsz(ct->info);  /* Bitfield size (temp.). */
       if (bsz == CTBSZ_FIELD || !ctype_isfield(ct->info)) {
 	bsz = csz;  /* Regular fields or subtypes always fill the container. */
 	bofs = (bofs + amask) & ~amask;  /* Start new aligned field. */
 	ct->size = (bofs >> 3);  /* Store field offset. */
+	if (ctype_isfield(ct->info))
+	  ct->info = CTINFO(CT_FIELD, ctype_cid(ct->info)) + CTALIGN(align);
       } else {  /* Bitfield. */
 	if (bsz == 0 || (attr & CTFP_ALIGNED) ||
 	    (!((attr|sattr) & CTFP_PACKED) && (bofs & amask) + bsz > csz))
@@ -1324,9 +1326,12 @@ static void cp_struct_layout(CPState *cp, CTypeID sid, CTInfo sattr)
 
 	/* Prefer regular field over bitfield. */
 	if (bsz == csz && (bofs & amask) == 0) {
-	  ct->info = CTINFO(CT_FIELD, ctype_cid(ct->info));
+	  ct->info = CTINFO(CT_FIELD, ctype_cid(ct->info)) +
+		     CTALIGN(lj_fls(sz));
 	  ct->size = (bofs >> 3);  /* Store field offset. */
 	} else {
+	  if (csz > amask+1 && bsz <= amask+1)
+	    csz = amask+1;  /* Shrink container of packed bitfield. */
 	  ct->info = CTINFO(CT_BITFIELD,
 	    (info & (CTF_QUAL|CTF_UNSIGNED|CTF_BOOL)) +
 	    (csz << (CTSHIFT_BITCSZ-3)) + (bsz << CTSHIFT_BITBSZ));
@@ -1766,9 +1771,11 @@ static void cp_pragma(CPState *cp, BCLine pragmaline)
     cp_check(cp, '(');
     if (cp->tok == CTOK_IDENT) {
       if (cp_str_is(cp->str, "push")) {
-	if (cp->curpack < CPARSE_MAX_PACKSTACK) {
+	if (cp->curpack < CPARSE_MAX_PACKSTACK-1) {
 	  cp->packstack[cp->curpack+1] = cp->packstack[cp->curpack];
 	  cp->curpack++;
+	} else {
+	  cp_errmsg(cp, cp->tok, LJ_ERR_XLEVELS);
 	}
       } else if (cp_str_is(cp->str, "pop")) {
 	if (cp->curpack > 0) cp->curpack--;

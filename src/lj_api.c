@@ -1,6 +1,6 @@
 /*
 ** Public Lua/C API.
-** Copyright (C) 2005-2021 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2026 Mike Pall. See Copyright Notice in luajit.h
 **
 ** Major portions taken verbatim or adapted from the Lua interpreter.
 ** Copyright (C) 1994-2008 Lua.org, PUC-Rio. See Copyright Notice in lua.h
@@ -151,7 +151,12 @@ LUA_API int lua_checkstack(lua_State *L, int size)
   if (size > LUAI_MAXCSTACK || (L->top - L->base + size) > LUAI_MAXCSTACK) {
     return 0;  /* Stack overflow. */
   } else if (size > 0) {
-    lj_state_checkstack(L, (MSize)size);
+    int avail = (int)(mref(L->maxstack, TValue) - L->top);
+    if (size > avail &&
+	lj_state_cpgrowstack(L, (MSize)(size - avail)) != LUA_OK) {
+      L->top--;
+      return 0;  /* Out of memory. */
+    }
   }
   return 1;
 }
@@ -458,11 +463,7 @@ LUA_API lua_Integer lua_tointeger(lua_State *L, int idx)
       return intV(&tmp);
     n = numV(&tmp);
   }
-#if LJ_64
-  return (lua_Integer)n;
-#else
-  return lj_num2int(n);
-#endif
+  return lj_num2int_type(n, lua_Integer);
 }
 
 LUA_API lua_Integer lua_tointegerx(lua_State *L, int idx, int *ok)
@@ -487,11 +488,7 @@ LUA_API lua_Integer lua_tointegerx(lua_State *L, int idx, int *ok)
     n = numV(&tmp);
   }
   if (ok) *ok = 1;
-#if LJ_64
-  return (lua_Integer)n;
-#else
-  return lj_num2int(n);
-#endif
+  return lj_num2int_type(n, lua_Integer);
 }
 
 LUALIB_API lua_Integer luaL_checkinteger(lua_State *L, int idx)
@@ -510,11 +507,7 @@ LUALIB_API lua_Integer luaL_checkinteger(lua_State *L, int idx)
       return (lua_Integer)intV(&tmp);
     n = numV(&tmp);
   }
-#if LJ_64
-  return (lua_Integer)n;
-#else
-  return lj_num2int(n);
-#endif
+  return lj_num2int_type(n, lua_Integer);
 }
 
 LUALIB_API lua_Integer luaL_optinteger(lua_State *L, int idx, lua_Integer def)
@@ -535,11 +528,7 @@ LUALIB_API lua_Integer luaL_optinteger(lua_State *L, int idx, lua_Integer def)
       return (lua_Integer)intV(&tmp);
     n = numV(&tmp);
   }
-#if LJ_64
-  return (lua_Integer)n;
-#else
-  return lj_num2int(n);
-#endif
+  return lj_num2int_type(n, lua_Integer);
 }
 
 LUA_API int lua_toboolean(lua_State *L, int idx)
@@ -754,36 +743,10 @@ LUA_API void lua_pushboolean(lua_State *L, int b)
   incr_top(L);
 }
 
-#if LJ_64
-static void *lightud_intern(lua_State *L, void *p)
-{
-  global_State *g = G(L);
-  uint64_t u = (uint64_t)p;
-  uint32_t up = lightudup(u);
-  uint32_t *segmap = mref(g->gc.lightudseg, uint32_t);
-  MSize segnum = g->gc.lightudnum;
-  if (segmap) {
-    MSize seg;
-    for (seg = 0; seg <= segnum; seg++)
-      if (segmap[seg] == up)  /* Fast path. */
-	return (void *)(((uint64_t)seg << LJ_LIGHTUD_BITS_LO) | lightudlo(u));
-    segnum++;
-  }
-  if (!((segnum-1) & segnum) && segnum != 1) {
-    if (segnum >= (1 << LJ_LIGHTUD_BITS_SEG)) lj_err_msg(L, LJ_ERR_BADLU);
-    lj_mem_reallocvec(L, segmap, segnum, segnum ? 2*segnum : 2u, uint32_t);
-    setmref(g->gc.lightudseg, segmap);
-  }
-  g->gc.lightudnum = segnum;
-  segmap[segnum] = up;
-  return (void *)(((uint64_t)segnum << LJ_LIGHTUD_BITS_LO) | lightudlo(u));
-}
-#endif
-
 LUA_API void lua_pushlightuserdata(lua_State *L, void *p)
 {
 #if LJ_64
-  p = lightud_intern(L, p);
+  p = lj_lightud_intern(L, p);
 #endif
   setrawlightudV(L->top, p);
   incr_top(L);
@@ -792,7 +755,7 @@ LUA_API void lua_pushlightuserdata(lua_State *L, void *p)
 LUA_API void lua_createtable(lua_State *L, int narray, int nrec)
 {
   lj_gc_check(L);
-  settabV(L, L->top, lj_tab_new_ah(L, narray, nrec));
+  settabV(L, L->top, lj_tab_new_ah(L, (uint32_t)narray, (uint32_t)nrec));
   incr_top(L);
 }
 
@@ -852,7 +815,7 @@ LUA_API void lua_concat(lua_State *L, int n)
 	L->top -= n;
 	break;
       }
-      n -= (int)(L->top - top);
+      n -= (int)(L->top - (top - 2*LJ_FR2));
       L->top = top+2;
       lj_vm_call(L, top, 1+1);
       L->top -= 1+LJ_FR2;
@@ -966,11 +929,13 @@ LUA_API int lua_next(lua_State *L, int idx)
   cTValue *t = index2adr(L, idx);
   int more;
   lj_checkapi(tvistab(t), "stack slot %d is not a table", idx);
-  more = lj_tab_next(L, tabV(t), L->top-1);
-  if (more) {
+  more = lj_tab_next(tabV(t), L->top-1, L->top-1);
+  if (more > 0) {
     incr_top(L);  /* Return new key and value slot. */
-  } else {  /* End of traversal. */
+  } else if (!more) {  /* End of traversal. */
     L->top--;  /* Remove key slot. */
+  } else {
+    lj_err_msg(L, LJ_ERR_NEXTIDX);
   }
   return more;
 }
@@ -1118,6 +1083,7 @@ LUA_API int lua_setmetatable(lua_State *L, int idx)
     /* Flush cache, since traces specialize to basemt. But not during __gc. */
     if (lj_trace_flushall(L))
       lj_err_caller(L, LJ_ERR_NOGCMM);
+    o = index2adr(L, idx);  /* Stack may have been reallocated. */
     if (tvisbool(o)) {
       /* NOBARRIER: basemt is a GC root. */
       setgcref(basemt_it(g, LJ_TTRUE), obj2gco(mt));
@@ -1226,7 +1192,7 @@ static TValue *cpcall(lua_State *L, lua_CFunction func, void *ud)
   setfuncV(L, top++, fn);
   if (LJ_FR2) setnilV(top++);
 #if LJ_64
-  ud = lightud_intern(L, ud);
+  ud = lj_lightud_intern(L, ud);
 #endif
   setrawlightudV(top++, ud);
   cframe_nres(L->cframe) = 1+0;  /* Zero results. */

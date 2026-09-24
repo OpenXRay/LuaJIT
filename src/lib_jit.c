@@ -1,6 +1,6 @@
 /*
 ** JIT library.
-** Copyright (C) 2005-2021 Mike Pall. See Copyright Notice in luajit.h
+** Copyright (C) 2005-2026 Mike Pall. See Copyright Notice in luajit.h
 */
 
 #define lib_jit_c
@@ -154,24 +154,6 @@ LJLIB_PUSH(top-2) LJLIB_SET(version)
 
 /* -- Reflection API for Lua functions ------------------------------------ */
 
-/* Return prototype of first argument (Lua function or prototype object) */
-static GCproto *check_Lproto(lua_State *L, int nolua)
-{
-  TValue *o = L->base;
-  if (L->top > o) {
-    if (tvisproto(o)) {
-      return protoV(o);
-    } else if (tvisfunc(o)) {
-      if (isluafunc(funcV(o)))
-	return funcproto(funcV(o));
-      else if (nolua)
-	return NULL;
-    }
-  }
-  lj_err_argt(L, 1, LUA_TFUNCTION);
-  return NULL;  /* unreachable */
-}
-
 static void setintfield(lua_State *L, GCtab *t, const char *name, int32_t val)
 {
   setintV(lj_tab_setstr(L, t, lj_str_newz(L, name)), val);
@@ -180,7 +162,7 @@ static void setintfield(lua_State *L, GCtab *t, const char *name, int32_t val)
 /* local info = jit.util.funcinfo(func [,pc]) */
 LJLIB_CF(jit_util_funcinfo)
 {
-  GCproto *pt = check_Lproto(L, 1);
+  GCproto *pt = lj_lib_checkLproto(L, 1, 1);
   if (pt) {
     BCPos pc = (BCPos)lj_lib_optint(L, 2, 0);
     GCtab *t;
@@ -222,7 +204,7 @@ LJLIB_CF(jit_util_funcinfo)
 /* local ins, m = jit.util.funcbc(func, pc) */
 LJLIB_CF(jit_util_funcbc)
 {
-  GCproto *pt = check_Lproto(L, 0);
+  GCproto *pt = lj_lib_checkLproto(L, 1, 0);
   BCPos pc = (BCPos)lj_lib_checkint(L, 2);
   if (pc < pt->sizebc) {
     BCIns ins = proto_bc(pt)[pc];
@@ -239,7 +221,7 @@ LJLIB_CF(jit_util_funcbc)
 /* local k = jit.util.funck(func, idx) */
 LJLIB_CF(jit_util_funck)
 {
-  GCproto *pt = check_Lproto(L, 0);
+  GCproto *pt = lj_lib_checkLproto(L, 1, 0);
   ptrdiff_t idx = (ptrdiff_t)lj_lib_checkint(L, 2);
   if (idx >= 0) {
     if (idx < (ptrdiff_t)pt->sizekn) {
@@ -259,7 +241,7 @@ LJLIB_CF(jit_util_funck)
 /* local name = jit.util.funcuvname(func, idx) */
 LJLIB_CF(jit_util_funcuvname)
 {
-  GCproto *pt = check_Lproto(L, 0);
+  GCproto *pt = lj_lib_checkLproto(L, 1, 0);
   uint32_t idx = (uint32_t)lj_lib_checkint(L, 2);
   if (idx < pt->sizeuv) {
     setstrV(L, L->top-1, lj_str_newz(L, lj_debug_uvname(pt, idx)));
@@ -339,11 +321,7 @@ LJLIB_CF(jit_util_tracek)
       ir = &T->ir[ir->op1];
     }
 #if LJ_HASFFI
-    if (ir->o == IR_KINT64 && !ctype_ctsG(G(L))) {
-      ptrdiff_t oldtop = savestack(L, L->top);
-      luaopen_ffi(L);  /* Load FFI library on-demand. */
-      L->top = restorestack(L, oldtop);
-    }
+    if (ir->o == IR_KINT64) ctype_loadffi(L);
 #endif
     lj_ir_kvalue(L, L->top-2, ir);
     setintV(L->top-1, (int32_t)irt_type(ir->t));
@@ -355,11 +333,12 @@ LJLIB_CF(jit_util_tracek)
   return 0;
 }
 
-/* local snap = jit.util.tracesnap(tr, sn) */
+/* local snap = jit.util.tracesnap(tr, sn[, getpos]) */
 LJLIB_CF(jit_util_tracesnap)
 {
   GCtrace *T = jit_checktrace(L);
   SnapNo sn = (SnapNo)lj_lib_checkint(L, 2);
+  int getpos = (L->base+2 < L->top && tvistruecond(L->base+2));
   if (T && sn < T->nsnap) {
     SnapShot *snap = &T->snap[sn];
     SnapEntry *map = &T->snapmap[snap->mapofs];
@@ -372,6 +351,12 @@ LJLIB_CF(jit_util_tracesnap)
     for (n = 0; n < nent; n++)
       setintV(lj_tab_setint(L, t, (int32_t)(n+2)), (int32_t)map[n]);
     setintV(lj_tab_setint(L, t, (int32_t)(nent+2)), (int32_t)SNAP(255, 0, 0));
+    if (getpos) {
+      const BCIns *pc = snap_pc(&map[nent]), *startpc = pc;
+      while (bc_op(*startpc) < BC_FUNCF) startpc--;
+      setintV(L->top++, (int)(pc - startpc));
+      return 2;
+    }
     return 1;
   }
   return 0;
@@ -419,7 +404,8 @@ LJLIB_CF(jit_util_ircalladdr)
 {
   uint32_t idx = (uint32_t)lj_lib_checkint(L, 1);
   if (idx < IRCALL__MAX) {
-    setintptrV(L->top-1, (intptr_t)(void *)lj_ir_callinfo[idx].func);
+    ASMFunction func = lj_ir_callinfo[idx].func;
+    setintptrV(L->top-1, (intptr_t)(void *)lj_ptr_strip(func));
     return 1;
   }
   return 0;
@@ -493,12 +479,21 @@ static int jitopt_param(jit_State *J, const char *str)
     size_t len = *(const uint8_t *)lst;
     lj_assertJ(len != 0, "bad JIT_P_STRING");
     if (strncmp(str, lst+1, len) == 0 && str[len] == '=') {
-      int32_t n = 0;
+      uint32_t n = 0;
       const char *p = &str[len+1];
       while (*p >= '0' && *p <= '9')
 	n = n*10 + (*p++ - '0');
-      if (*p) return 0;  /* Malformed number. */
-      J->param[i] = n;
+      if (*p || (int32_t)n < 0) return 0;  /* Malformed number. */
+      if (i == JIT_P_sizemcode) {  /* Adjust to required range here. */
+#if LJ_TARGET_JUMPRANGE
+	uint32_t maxkb = ((1 << (LJ_TARGET_JUMPRANGE - 10)) - 64);
+#else
+	uint32_t maxkb = ((1 << (31 - 10)) - 64);
+#endif
+	n = (n + (LJ_PAGESIZE >> 10) - 1) & ~((LJ_PAGESIZE >> 10) - 1);
+	if (n > maxkb) n = maxkb;
+      }
+      J->param[i] = (int32_t)n;
       if (i == JIT_P_hotloop)
 	lj_dispatch_init_hotcount(J2G(J));
       return 1;  /* Ok. */
@@ -540,8 +535,8 @@ LJLIB_CF(jit_opt_start)
 
 /* Not loaded by default, use: local profile = require("jit.profile") */
 
-#define KEY_PROFILE_THREAD	(U64x(80000000,00000000)|'t')
-#define KEY_PROFILE_FUNC	(U64x(80000000,00000000)|'f')
+#define KEY_PROFILE_THREAD	(U64x(81000000,00000000)|'t')
+#define KEY_PROFILE_FUNC	(U64x(81000000,00000000)|'f')
 
 static void jit_profile_callback(lua_State *L2, lua_State *L, int samples,
 				 int vmstate)
@@ -655,6 +650,12 @@ static uint32_t jit_cpudetect(void)
   uint32_t features[4];
   if (lj_vm_cpuid(0, vendor) && lj_vm_cpuid(1, features)) {
     flags |= ((features[2] >> 0)&1) * JIT_F_SSE3;
+#if LJ_TARGET_X86
+    if (flags) {
+      lj_vm_num2i64_ptr = lj_vm_num2i64_sse3;
+      lj_vm_num2u64_ptr = lj_vm_num2u64_sse3;
+    }
+#endif
     flags |= ((features[2] >> 19)&1) * JIT_F_SSE4_1;
     if (vendor[0] >= 7) {
       uint32_t xfeatures[4];
@@ -730,7 +731,16 @@ static void jit_init(lua_State *L)
   jit_State *J = L2J(L);
   J->flags = jit_cpudetect() | JIT_F_ON | JIT_F_OPT_DEFAULT;
   memcpy(J->param, jit_param_default, sizeof(J->param));
-  lj_dispatch_update(G(L));
+#if LJ_TARGET_UNALIGNED
+  G(L)->tmptv.u64 = U64x(0000504d,4d500000);
+#endif
+  lj_dispatch_update(G(L), 0);
+#if LJ_TARGET_UNALIGNED
+  /* If you get a crash below then your toolchain indicates unaligned
+  ** accesses are OK, but your kernel disagrees. I.e. fix your toolchain.
+  */
+  if (*(uint32_t *)((char *)&G(L)->tmptv + 2) != 0x504d4d50u) L->top = NULL;
+#endif
 }
 #endif
 
@@ -741,7 +751,7 @@ LUALIB_API int luaopen_jit(lua_State *L)
 #endif
   lua_pushliteral(L, LJ_OS_NAME);
   lua_pushliteral(L, LJ_ARCH_NAME);
-  lua_pushinteger(L, LUAJIT_VERSION_NUM);
+  lua_pushinteger(L, LUAJIT_VERSION_NUM);  /* Deprecated. */
   lua_pushliteral(L, LUAJIT_VERSION);
   LJ_LIB_REG(L, LUA_JITLIBNAME, jit);
 #if LJ_HASPROFILE
