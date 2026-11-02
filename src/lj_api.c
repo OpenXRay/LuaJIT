@@ -33,9 +33,13 @@
 #if LJ_TARGET_WINDOWS
 static inline uint64_t get_high_resolution_time(void)
 {
-  LARGE_INTEGER cnt;
+  LARGE_INTEGER cnt, frq;
+  uint64_t t, f;
   QueryPerformanceCounter(&cnt);
-  return cnt.QuadPart;
+  QueryPerformanceFrequency(&frq);
+  t = (uint64_t)cnt.QuadPart;
+  f = (uint64_t)frq.QuadPart;
+  return (t / f) * 1000000000ULL + (t % f) * 1000000000ULL / f;
 }
 #elif LJ_TARGET_POSIX
 static inline uint64_t get_high_resolution_time(void)
@@ -54,7 +58,7 @@ static int gc_step_timeout(lua_State *L, uint32_t timeout_usec)
 {
 #if LJ_TARGET_WINDOWS || LJ_TARGET_POSIX
   int res = 0;
-  uint64_t timeout = timeout_usec * 1000;
+  uint64_t timeout = (uint64_t)timeout_usec * 1000;
 
   uint64_t time_current = get_high_resolution_time();
 
